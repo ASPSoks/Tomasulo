@@ -1,5 +1,9 @@
 # TomasuloSimulator
 
+## Grupo
+- André Scianni Pereira
+- Davi Caetano Tavares Ramos
+- João Pedro Nascimento Fernandes 
 ## Execução
 
 Os arquivos `source.txt` e `source.exe` devem estar no mesmo diretório.
