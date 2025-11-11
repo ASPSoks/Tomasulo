@@ -11,10 +11,22 @@
 #include <vector>
 #include <algorithm>
 #include <stdexcept>
+#include <wchar.h>
 
 using namespace std;
 
 void irPara(short x, short y);
+
+// Estrutura para configurar a fonte do console (Windows API)
+typedef struct _INFO_FONTE_CONSOL_EXT
+{
+    ULONG tamanhoDaEstrutura;
+    DWORD indiceFonte;
+    COORD dimensoesFonte;
+    UINT  familiaFonte;
+    UINT  pesoFonte;
+    WCHAR nomeDaFace[LF_FACESIZE];
+} INFO_FONTE_CONSOL_EXT, *PINFO_FONTE_CONSOL_EXT;
 
 // Registrador simples: nome e valor
 struct Registrador {
@@ -452,13 +464,12 @@ struct Tomasulo {
             logEventos += "-> Instrucao " + to_string(indiceInstrucao) + " emitida para " + er.nome + " (MUL/DIV).\n";
         }
         else if (instr.tipoInstrucao == TiposInstrucao::BNE) {
-            // usa ER de ADD para sincronizar dependências
             int idx = encontrarERAddSubLivre();
             if (idx == -1) { logEventos += "-> Instrucao " + to_string(indiceInstrucao) + " nao emitida: ER indisponivel (BNE).\n"; return -1; }
             EstacaoReserva& er = estacoesAddSub[idx];
 
             er.ocupado = true; er.tipoInstrucao = TiposInstrucao::BNE; er.instrucao = &instr;
-            instr.status.emitido = cicloAtual; instr.status.ciclosRestantesExecucao = 1; // custo do compare
+            instr.status.emitido = cicloAtual; instr.status.ciclosRestantesExecucao = 1;
 
             int regRsNum = atoi(&instr.regFonte1.c_str()[1]);
             er.origemJ = estadoRegistradores[regRsNum].unidadeEscritora;
@@ -468,7 +479,6 @@ struct Tomasulo {
             er.origemK = estadoRegistradores[regRtNum].unidadeEscritora;
             er.valorK = er.origemK.empty() ? "R(" + instr.regFonte2 + ")" : "";
 
-            // trava emissão até resolver
             branchPending = true;
             branchResolved = false;
             branchIssuedIndex = indiceInstrucao;
@@ -580,7 +590,6 @@ struct Tomasulo {
                     if (er.instrucao->status.fimExecucao == cicloAtual) continue;
 
                     if (er.tipoInstrucao == TiposInstrucao::BNE) {
-                        // resolve desvio
                         int vj = obterValorOperando(er.valorJ);
                         int vk = obterValorOperando(er.valorK);
                         bool taken = (vj != vk);
@@ -595,7 +604,6 @@ struct Tomasulo {
                         er.instrucao->status.escritaResultado = cicloAtual;
                         logEventos += "-> BNE resolvido: " + string(taken ? "TAKEN" : "NOT TAKEN") + ".\n";
 
-                        // libera ER
                         er.ocupado = false;
                         er.tipoInstrucao = er.valorJ = er.valorK = er.origemJ = er.origemK = "";
                         er.instrucao = nullptr;
@@ -604,7 +612,6 @@ struct Tomasulo {
                         escreveu = true;
                         break;
                     } else {
-                        // ADD/SUB escreve no CDB
                         er.instrucao->status.escritaResultado = cicloAtual;
                         logEventos += "-> ER " + er.nome + " escreveu resultado no CDB.\n";
 
@@ -933,27 +940,49 @@ struct Tomasulo {
 };
 
 int main(int /*argc*/, char* /*argv*/[]) {
-    // aumenta a fonte para caber melhor a “UI” de console
-    CONSOLE_FONT_INFOEX info{};
+    // Ajuste de fonte opcional e seguro (ignorado se a API não existir)
+#if defined(_WIN32)
+    // Definição local com o mesmo layout, para evitar depender de CONSOLE_FONT_INFOEX
+    struct CONSOLE_FONT_INFOEX_LOCAL {
+        ULONG cbSize;
+        DWORD nFont;
+        COORD dwFontSize;
+        UINT  FontFamily;
+        UINT  FontWeight;
+        WCHAR FaceName[LF_FACESIZE];
+    } info{};
+
     info.cbSize = sizeof(info);
     info.nFont = 0;
     info.dwFontSize.X = 0;
     info.dwFontSize.Y = 18;
     info.FontFamily = FF_DONTCARE;
     info.FontWeight = FW_NORMAL;
-    wcscpy_s(info.FaceName, L"Consolas");
-    SetCurrentConsoleFontEx(GetStdHandle(STD_OUTPUT_HANDLE), FALSE, &info);
+    wcscpy(info.FaceName, L"Consolas");
+
+    using SetFontExFn = BOOL (WINAPI*)(HANDLE, BOOL, void*);
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    SetFontExFn pSetCurrentConsoleFontEx =
+        k32 ? reinterpret_cast<SetFontExFn>(GetProcAddress(k32, "SetCurrentConsoleFontEx")) : nullptr;
+
+    if (pSetCurrentConsoleFontEx) {
+        pSetCurrentConsoleFontEx(GetStdHandle(STD_OUTPUT_HANDLE), FALSE, &info);
+    }
+#endif
 
     // cor de fundo/primeiro plano
+#if defined(_WIN32)
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
     SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY | BACKGROUND_BLUE);
     system("cls");
+#endif
 
     Tomasulo simulador;
     simulador.carregarDadosDoArquivo("./source.txt");
     simulador.Simular();
     return 0;
 }
+
 
 // posiciona cursor no console
 void irPara(short x, short y) {
