@@ -1,0 +1,20 @@
+Add_Sub_Reservation_Stations 3
+Mul_Div_Reservation_Stations 2
+Load_Buffers 3
+Store_Buffers 1
+
+Add_Sub_Cycles 2
+Mul_Cycles 10
+Load_Store_Cycles 2
+Div_Cycles 40
+
+Registers 11
+
+7
+ADD F2 F4 F5
+STORE F2 45 F5
+MUL F0 F2 F4
+SUB F8 F6 F2
+DIV F10 F0 F6
+ADD F6 F8 F2
+ADD F8 F6 F2
