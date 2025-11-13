@@ -2,50 +2,65 @@
 
 #include <windows.h>
 #include <iostream>
-#include <stdlib.h>
 #include <iomanip>
 #include <string>
 #include <fstream>
-#include <conio.h>
 #include <sstream>
 #include <vector>
 #include <algorithm>
 #include <stdexcept>
-#include <wchar.h>
+#include <cctype>
 
 using namespace std;
 
 void irPara(short x, short y);
-
-// Estrutura para configurar a fonte do console (Windows API)
-typedef struct _INFO_FONTE_CONSOL_EXT
-{
-    ULONG tamanhoDaEstrutura;
-    DWORD indiceFonte;
-    COORD dimensoesFonte;
-    UINT  familiaFonte;
-    UINT  pesoFonte;
-    WCHAR nomeDaFace[LF_FACESIZE];
-} INFO_FONTE_CONSOL_EXT, *PINFO_FONTE_CONSOL_EXT;
 
 // Registrador simples: nome e valor
 struct Registrador {
     string nome;
     int valor;
     Registrador() : nome(""), valor(0) {}
-    bool operator==(const Registrador& r) const { return (nome == r.nome); }
+    bool operator==(const Registrador& r) const { return nome == r.nome; }
 };
 
 vector<Registrador> registradores; // F0..Fn
 vector<Registrador> memoria;       // memória simulada: par (endereco como string, valor)
 
+// Funções auxiliares globais
+int obterValorRegistrador(const string& nomeReg) {
+    for (const auto& r : registradores)
+        if (r.nome == nomeReg) return r.valor;
+    return 0;
+}
+
+int lerMemoria(int endereco) {
+    string k = to_string(endereco);
+    for (const auto& m : memoria)
+        if (m.nome == k) return m.valor;
+    return 0;
+}
+
+void escreverMemoria(int endereco, int valor) {
+    string k = to_string(endereco);
+    for (auto& m : memoria) {
+        if (m.nome == k) {
+            m.valor = valor;
+            return;
+        }
+    }
+    Registrador r;
+    r.nome = k;
+    r.valor = valor;
+    memoria.push_back(r);
+}
+
 // Marcações por instrução (ciclos)
 struct StatusInstrucao {
-    short emitido;
-    short inicioExecucao;
-    short fimExecucao;
-    short escritaResultado;
-    short ciclosRestantesExecucao;
+    int emitido;
+    int inicioExecucao;
+    int fimExecucao;
+    int escritaResultado;
+    int ciclosRestantesExecucao;
     StatusInstrucao() {
         emitido = inicioExecucao = fimExecucao = escritaResultado = ciclosRestantesExecucao = -1;
     }
@@ -53,7 +68,6 @@ struct StatusInstrucao {
 
 // “Enums” textuais
 struct TiposInstrucao {
-public:
     static const string MULT;
     static const string SUBT;
     static const string SOMA;
@@ -63,12 +77,12 @@ public:
     static const string ARMAZENA;
 };
 
-const string TiposInstrucao::MULT = "MUL";
-const string TiposInstrucao::SUBT = "SUB";
-const string TiposInstrucao::SOMA = "ADD";
-const string TiposInstrucao::DIVI = "DIV";
-const string TiposInstrucao::CARREGA = "LOAD";
-const string TiposInstrucao::BNE = "BNE";
+const string TiposInstrucao::MULT     = "MUL";
+const string TiposInstrucao::SUBT     = "SUB";
+const string TiposInstrucao::SOMA     = "ADD";
+const string TiposInstrucao::DIVI     = "DIV";
+const string TiposInstrucao::CARREGA  = "LOAD";
+const string TiposInstrucao::BNE      = "BNE";
 const string TiposInstrucao::ARMAZENA = "STORE";
 
 struct TipoEstacaoReserva {
@@ -111,94 +125,118 @@ struct EstacaoReserva {
     string nome;
     bool ocupado;
     string tipoInstrucao; // "ADD","SUB","MUL","DIV","BNE"
-    string valorJ;  // Vj
-    string valorK;  // Vk
-    string origemJ; // Qj
-    string origemK; // Qk
+    int valorJ;  // Vj (literal quando pronto)
+    int valorK;  // Vk (literal quando pronto)
+    string origemJ; // Qj (tag)
+    string origemK; // Qk (tag)
+    int destReg;    // índice do registrador destino (para R-type)
     Instrucao *instrucao;
-    EstacaoReserva() : ocupado(false), instrucao(nullptr) {
-        valorJ = valorK = origemJ = origemK = "";
-    }
+    int ciclosRestantes;
+    EstacaoReserva()
+        : nome(""), ocupado(false), tipoInstrucao(""),
+          valorJ(0), valorK(0), origemJ(""), origemK(""),
+          destReg(-1), instrucao(nullptr), ciclosRestantes(-1) {}
 };
 
-// Buffers de LOAD/STORE
-struct BufferLS {
+// Buffers de LOAD
+struct BufferLoad {
     string nome;
     bool ocupado;
-    string endereco; // representacao textual de Rs+offset
-    string origemRs; // produtor do Rs
-    string valorRs;  // "R(Fx)" ou valor pronto
-    string fu;       // STORE: valor pronto ou produtor; LOAD: vazio
-    bool hasForward; // forwarding STORE->LOAD
-    string forwardValue;
-    Instrucao *instrucao;
-    BufferLS() : nome(""), ocupado(false), endereco(""),
-                 origemRs(""), valorRs(""), fu(""),
-                 hasForward(false), forwardValue(""),
-                 instrucao(nullptr) {}
+    int baseVal;      // valor numérico quando pronto
+    string origemBase; // tag do produtor da base
+    int offset;
+    int destReg;      // índice do registrador destino
+    int ciclosRestantes;
+    bool resultReady;
+    int resultado;
+    bool hasForward;
+    int forwardVal;
+    Instrucao* instrucao;
+    BufferLoad()
+        : nome(""), ocupado(false), baseVal(0), origemBase(""),
+          offset(0), destReg(-1), ciclosRestantes(-1),
+          resultReady(false), resultado(0),
+          hasForward(false), forwardVal(0),
+          instrucao(nullptr) {}
+};
+
+// Buffers de STORE
+struct BufferStore {
+    string nome;
+    bool ocupado;
+    int baseVal;
+    string origemBase;
+    int offset;
+    int value;
+    string origemVal;
+    int ciclosRestantes;
+    Instrucao* instrucao;
+    BufferStore()
+        : nome(""), ocupado(false), baseVal(0), origemBase(""),
+          offset(0), value(0), origemVal(""),
+          ciclosRestantes(-1), instrucao(nullptr) {}
 };
 
 // Núcleo do simulador
 struct Tomasulo {
     string logEventos;
-    int cicloAtual;
-    BufferLS *buffersCarregamento;
-    BufferLS *buffersArmazenamento;
-    EstacaoReserva *estacoesAddSub;
-    EstacaoReserva *estacoesMultDiv;
-    EstadoRegistrador *estadoRegistradores;
+    int cicloAtual = 0;
 
-    int numBuffersCarregamento;
-    int numBuffersArmazenamento;
-    int numEstacoesAddSub;
-    int numEstacoesMultDiv;
+    BufferLoad*  buffersCarregamento   = nullptr;
+    BufferStore* buffersArmazenamento  = nullptr;
+    EstacaoReserva* estacoesAddSub     = nullptr;
+    EstacaoReserva* estacoesMultDiv    = nullptr;
+    EstadoRegistrador* estadoRegistradores = nullptr;
 
-    int numTotalRegistradores;
-    Instrucao* instrucoes;
-    int numInstrucoes;
+    int numBuffersCarregamento = 0;
+    int numBuffersArmazenamento = 0;
+    int numEstacoesAddSub = 0;
+    int numEstacoesMultDiv = 0;
 
-    // latências
-    int ciclosLS;
-    int ciclosAddSub;
-    int ciclosMult;
-    int ciclosDiv;
+    int numTotalRegistradores = 0;
+    Instrucao* instrucoes = nullptr;
+    int numInstrucoes = 0;
 
-    // arbitragem do CDB (round-robin): 0=ADD/SUB/BNE, 1=MUL/DIV, 2=LOAD
-    int cdb_rr = 0;
+    int ciclosLS = 1;
+    int ciclosAddSub = 1;
+    int ciclosMult = 1;
+    int ciclosDiv = 1;
 
-    // controle de BNE sem especulação
+    int cdb_rr = 0; // 0=ADD/SUB/BNE, 1=MUL/DIV, 2=LOAD
+
     bool branchPending = false;
     bool branchResolved = false;
     bool branchTaken = false;
     int branchTarget = -1;
     int branchIssuedIndex = -1;
 
-    int eNumero(string s) { return all_of(s.begin(), s.end(), ::isdigit) ? 1 : 0; }
-
-    static bool isRegToken(const string& s) {
-        return (s.size() >= 2 && (s[0]=='F' || s[0]=='f') && all_of(s.begin()+1, s.end(), ::isdigit));
+    int eNumero(const string& s) const {
+        return all_of(s.begin(), s.end(),
+                      [](unsigned char c){ return std::isdigit(c); }) ? 1 : 0;
     }
 
-    // resolve “string de operando” para valor inteiro
-    int obterValorOperando(const string& operando) {
+    static int obterValorOperando(const string& operando) {
         if (operando.empty()) return 0;
-        if (operando.size() > 3 && operando[0] == 'R' && operando[1] == '(' && operando.back() == ')') {
-            string regNome = operando.substr(2, operando.size() - 3);
-            for (const auto& r : registradores) if (r.nome == regNome) return r.valor;
-        }
         try { return stoi(operando); }
         catch (...) { return 0; }
     }
 
     static bool isValueReadyString(const string& s) {
         if (s.empty()) return false;
-        if (s.size() > 3 && s[0]=='R' && s[1]=='(') return false; // ainda é referência a reg
-        return true;
+        size_t i = (s[0] == '+' || s[0] == '-') ? 1 : 0;
+        if (i >= s.size()) return false;
+        return all_of(s.begin() + i, s.end(),
+                      [](unsigned char c){ return std::isdigit(c); });
     }
 
-    // parse do arquivo de entrada
-    void carregarDadosDoArquivo(string nomeArquivo) {
-        if (nomeArquivo.empty()) nomeArquivo = "source.txt";
+    int regIndex(const string& r) const {
+        if (r.size() < 2 || (r[0] != 'F' && r[0] != 'f')) return -1;
+        int n = atoi(r.c_str() + 1);
+        if (n < 0 || n >= numTotalRegistradores) return -1;
+        return n;
+    }
+
+    void carregarDadosDoArquivo(const string& nomeArquivo) {
         ifstream leitura(nomeArquivo);
         if (!leitura.is_open()) {
             cout << "O arquivo de entrada nao pode ser aberto: " << nomeArquivo << endl;
@@ -207,331 +245,471 @@ struct Tomasulo {
         }
 
         string linhaDados;
-        while (leitura.peek() != EOF && leitura.peek() == '#') getline(leitura, linhaDados);
+
+        while (leitura.peek() != EOF && leitura.peek() == '#')
+            getline(leitura, linhaDados);
 
         for (int i = 0; i < 4; i++) {
             leitura >> linhaDados;
-            if (_stricmp(linhaDados.c_str(), "Add_Sub_Reservation_Stations") == 0) leitura >> this->numEstacoesAddSub;
-            else if (_stricmp(linhaDados.c_str(), "Mul_Div_Reservation_Stations") == 0) leitura >> this->numEstacoesMultDiv;
-            else if (_stricmp(linhaDados.c_str(), "Load_Buffers") == 0) leitura >> this->numBuffersCarregamento;
-            else if (_stricmp(linhaDados.c_str(), "Store_Buffers") == 0) leitura >> this->numBuffersArmazenamento;
+            if (linhaDados == "Add_Sub_Reservation_Stations")
+                leitura >> numEstacoesAddSub;
+            else if (linhaDados == "Mul_Div_Reservation_Stations")
+                leitura >> numEstacoesMultDiv;
+            else if (linhaDados == "Load_Buffers")
+                leitura >> numBuffersCarregamento;
+            else if (linhaDados == "Store_Buffers")
+                leitura >> numBuffersArmazenamento;
         }
 
-        while (leitura.peek() != EOF && leitura.peek() == '#') getline(leitura, linhaDados);
+        while (leitura.peek() != EOF && leitura.peek() == '#')
+            getline(leitura, linhaDados);
 
         for (int i = 0; i < 4; i++) {
             leitura >> linhaDados;
-            if (_stricmp(linhaDados.c_str(), "Add_Sub_Cycles") == 0) leitura >> this->ciclosAddSub;
-            else if (_stricmp(linhaDados.c_str(), "Mul_Cycles") == 0) leitura >> this->ciclosMult;
-            else if (_stricmp(linhaDados.c_str(), "Load_Store_Cycles") == 0) leitura >> this->ciclosLS;
-            else if (_stricmp(linhaDados.c_str(), "Div_Cycles") == 0) leitura >> this->ciclosDiv;
+            if (linhaDados == "Add_Sub_Cycles")
+                leitura >> ciclosAddSub;
+            else if (linhaDados == "Mul_Cycles")
+                leitura >> ciclosMult;
+            else if (linhaDados == "Load_Store_Cycles")
+                leitura >> ciclosLS;
+            else if (linhaDados == "Div_Cycles")
+                leitura >> ciclosDiv;
         }
 
-        // alocação de estruturas
-        this->buffersCarregamento = new BufferLS[this->numBuffersCarregamento];
-        for (int i = 0; i < numBuffersCarregamento; i++) this->buffersCarregamento[i].nome = TipoBufferLS::CARREGA + to_string(i);
+        ciclosAddSub = max(1, ciclosAddSub);
+        ciclosMult   = max(1, ciclosMult);
+        ciclosDiv    = max(1, ciclosDiv);
+        ciclosLS     = max(1, ciclosLS);
 
-        this->buffersArmazenamento = new BufferLS[this->numBuffersArmazenamento];
-        for (int i = 0; i < numBuffersArmazenamento; i++) this->buffersArmazenamento[i].nome = TipoBufferLS::ARMAZENA + to_string(i);
+        buffersCarregamento = new BufferLoad[numBuffersCarregamento];
+        for (int i = 0; i < numBuffersCarregamento; i++)
+            buffersCarregamento[i].nome = TipoBufferLS::CARREGA + to_string(i);
 
-        this->estacoesAddSub = new EstacaoReserva[this->numEstacoesAddSub];
-        for (int i = 0; i < this->numEstacoesAddSub; i++) this->estacoesAddSub[i].nome = TipoEstacaoReserva::ADIC_SUB + to_string(i);
+        buffersArmazenamento = new BufferStore[numBuffersArmazenamento];
+        for (int i = 0; i < numBuffersArmazenamento; i++)
+            buffersArmazenamento[i].nome = TipoBufferLS::ARMAZENA + to_string(i);
 
-        this->estacoesMultDiv = new EstacaoReserva[this->numEstacoesMultDiv];
-        for (int i = 0; i < this->numEstacoesMultDiv; i++) this->estacoesMultDiv[i].nome = TipoEstacaoReserva::MULT_DIV + to_string(i);
+        estacoesAddSub = new EstacaoReserva[numEstacoesAddSub];
+        for (int i = 0; i < numEstacoesAddSub; i++)
+            estacoesAddSub[i].nome = TipoEstacaoReserva::ADIC_SUB + to_string(i);
 
-        while (leitura.peek() != EOF && leitura.peek() == '#') getline(leitura, linhaDados);
+        estacoesMultDiv = new EstacaoReserva[numEstacoesMultDiv];
+        for (int i = 0; i < numEstacoesMultDiv; i++)
+            estacoesMultDiv[i].nome = TipoEstacaoReserva::MULT_DIV + to_string(i);
 
-        // registradores
-        leitura >> linhaDados;
-        leitura >> this->numTotalRegistradores;
-        this->estadoRegistradores = new EstadoRegistrador[numTotalRegistradores];
+        while (leitura.peek() != EOF && leitura.peek() == '#')
+            getline(leitura, linhaDados);
+
+        leitura >> linhaDados; // "Registers"
+        leitura >> numTotalRegistradores;
+        estadoRegistradores = new EstadoRegistrador[numTotalRegistradores];
 
         for (int i = 0; i < numTotalRegistradores; i++) {
-            this->estadoRegistradores[i].nomeRegistrador = "F" + to_string(i);
-            Registrador r; r.nome = "F" + to_string(i); r.valor = 0; registradores.push_back(r);
+            estadoRegistradores[i].nomeRegistrador = "F" + to_string(i);
+            estadoRegistradores[i].unidadeEscritora.clear();
+            Registrador r;
+            r.nome = "F" + to_string(i);
+            r.valor = 0;
+            registradores.push_back(r);
         }
 
-        while (leitura.peek() != EOF && leitura.peek() == '#') getline(leitura, linhaDados);
+        while (leitura.peek() != EOF && leitura.peek() == '#')
+            getline(leitura, linhaDados);
 
-        // instruções
-        leitura >> this->numInstrucoes;
-        this->instrucoes = new Instrucao[this->numInstrucoes];
+        leitura >> numInstrucoes;
+        instrucoes = new Instrucao[numInstrucoes];
 
         for (int i = 0; i < numInstrucoes; i++) {
             string tipo; leitura >> tipo;
-            if (_stricmp(tipo.c_str(), TiposInstrucao::SOMA.c_str()) == 0 ||
-                _stricmp(tipo.c_str(), TiposInstrucao::SUBT.c_str()) == 0 ||
-                _stricmp(tipo.c_str(), TiposInstrucao::MULT.c_str()) == 0 ||
-                _stricmp(tipo.c_str(), TiposInstrucao::DIVI.c_str()) == 0) {
-                this->instrucoes[i].tipoInstrucao = tipo;
-                leitura >> this->instrucoes[i].regDestino;
-                leitura >> this->instrucoes[i].regFonte1;
-                leitura >> this->instrucoes[i].regFonte2;
-            } else if (_stricmp(tipo.c_str(), TiposInstrucao::CARREGA.c_str()) == 0) {
-                this->instrucoes[i].tipoInstrucao = TiposInstrucao::CARREGA;
-                leitura >> this->instrucoes[i].regFonte2;         // Rt
-                leitura >> this->instrucoes[i].offsetImediato;    // offset
-                leitura >> this->instrucoes[i].regFonte1;         // Rs
-            } else if (_stricmp(tipo.c_str(), TiposInstrucao::ARMAZENA.c_str()) == 0) {
-                this->instrucoes[i].tipoInstrucao = TiposInstrucao::ARMAZENA;
-                leitura >> this->instrucoes[i].regFonte2;         // Rt
-                leitura >> this->instrucoes[i].offsetImediato;
-                leitura >> this->instrucoes[i].regFonte1;         // Rs
-            } else if (_stricmp(tipo.c_str(), TiposInstrucao::BNE.c_str()) == 0) {
-                this->instrucoes[i].tipoInstrucao = TiposInstrucao::BNE;
-                leitura >> this->instrucoes[i].regFonte1;         // Rs
-                leitura >> this->instrucoes[i].regFonte2;         // Rt
-                leitura >> this->instrucoes[i].offsetImediato;    // deslocamento relativo
+            if (tipo == TiposInstrucao::SOMA ||
+                tipo == TiposInstrucao::SUBT ||
+                tipo == TiposInstrucao::MULT ||
+                tipo == TiposInstrucao::DIVI) {
+                instrucoes[i].tipoInstrucao = tipo;
+                leitura >> instrucoes[i].regDestino;
+                leitura >> instrucoes[i].regFonte1;
+                leitura >> instrucoes[i].regFonte2;
+            } else if (tipo == TiposInstrucao::CARREGA) {
+                instrucoes[i].tipoInstrucao = TiposInstrucao::CARREGA;
+                leitura >> instrucoes[i].regFonte2;      // Rt
+                leitura >> instrucoes[i].offsetImediato; // offset
+                leitura >> instrucoes[i].regFonte1;      // Rs
+            } else if (tipo == TiposInstrucao::ARMAZENA) {
+                instrucoes[i].tipoInstrucao = TiposInstrucao::ARMAZENA;
+                leitura >> instrucoes[i].regFonte2;      // Rt (valor)
+                leitura >> instrucoes[i].offsetImediato;
+                leitura >> instrucoes[i].regFonte1;      // Rs (base)
+            } else if (tipo == TiposInstrucao::BNE) {
+                instrucoes[i].tipoInstrucao = TiposInstrucao::BNE;
+                leitura >> instrucoes[i].regFonte1;      // Rs
+                leitura >> instrucoes[i].regFonte2;      // Rt
+                leitura >> instrucoes[i].offsetImediato; // deslocamento
             } else {
-                // ignora
+                // ignora tokens desconhecidos
             }
         }
     }
 
-    // busca de recursos livres
     int encontrarBufferLoadLivre() {
-        for (int i = 0; i < numBuffersCarregamento; i++) if (!buffersCarregamento[i].ocupado) return i;
-        return -1;
-    }
-    int encontrarBufferStoreLivre() {
-        for (int i = 0; i < numBuffersArmazenamento; i++) if (!buffersArmazenamento[i].ocupado) return i;
-        return -1;
-    }
-    int encontrarERAddSubLivre() {
-        for (int i = 0; i < numEstacoesAddSub; i++) if (!estacoesAddSub[i].ocupado) return i;
-        return -1;
-    }
-    int encontrarERMultDivLivre() {
-        for (int i = 0; i < numEstacoesMultDiv; i++) if (!estacoesMultDiv[i].ocupado) return i;
+        for (int i = 0; i < numBuffersCarregamento; i++)
+            if (!buffersCarregamento[i].ocupado) return i;
         return -1;
     }
 
-    // broadcast no “CDB” para destravar dependências
-    void transmitirResultado(const string& valor, const string& nomeUnidade) {
+    int encontrarBufferStoreLivre() {
+        for (int i = 0; i < numBuffersArmazenamento; i++)
+            if (!buffersArmazenamento[i].ocupado) return i;
+        return -1;
+    }
+
+    int encontrarERAddSubLivre() {
+        for (int i = 0; i < numEstacoesAddSub; i++)
+            if (!estacoesAddSub[i].ocupado) return i;
+        return -1;
+    }
+
+    int encontrarERMultDivLivre() {
+        for (int i = 0; i < numEstacoesMultDiv; i++)
+            if (!estacoesMultDiv[i].ocupado) return i;
+        return -1;
+    }
+
+    void transmitirResultado(int valor, const string& nomeUnidade) {
+        // LOAD buffers
         for (int i = 0; i < numBuffersCarregamento; i++) {
-            BufferLS& buf = buffersCarregamento[i];
-            if (buf.ocupado) {
-                if (buf.origemRs == nomeUnidade) { buf.origemRs = ""; buf.valorRs = valor; }
-                if (buf.fu == nomeUnidade) { buf.fu = ""; }
+            BufferLoad& lb = buffersCarregamento[i];
+            if (!lb.ocupado) continue;
+            if (lb.origemBase == nomeUnidade) {
+                lb.origemBase.clear();
+                lb.baseVal = valor;
             }
         }
+        // STORE buffers
         for (int i = 0; i < numBuffersArmazenamento; i++) {
-            BufferLS& buf = buffersArmazenamento[i];
-            if (buf.ocupado) {
-                if (buf.origemRs == nomeUnidade) { buf.origemRs = ""; buf.valorRs = valor; }
-                if (buf.fu == nomeUnidade) { buf.fu = valor; }
+            BufferStore& sb = buffersArmazenamento[i];
+            if (!sb.ocupado) continue;
+            if (sb.origemBase == nomeUnidade) {
+                sb.origemBase.clear();
+                sb.baseVal = valor;
+            }
+            if (sb.origemVal == nomeUnidade) {
+                sb.origemVal.clear();
+                sb.value = valor;
             }
         }
+        // Estações ADD/SUB/BNE
         for (int i = 0; i < numEstacoesAddSub; i++) {
             EstacaoReserva& er = estacoesAddSub[i];
-            if (er.origemJ == nomeUnidade) { er.origemJ = ""; er.valorJ = valor; }
-            if (er.origemK == nomeUnidade) { er.origemK = ""; er.valorK = valor; }
+            if (!er.ocupado) continue;
+            if (er.origemJ == nomeUnidade) {
+                er.origemJ.clear();
+                er.valorJ = valor;
+            }
+            if (er.origemK == nomeUnidade) {
+                er.origemK.clear();
+                er.valorK = valor;
+            }
         }
+        // Estações MUL/DIV
         for (int i = 0; i < numEstacoesMultDiv; i++) {
             EstacaoReserva& er = estacoesMultDiv[i];
-            if (er.origemJ == nomeUnidade) { er.origemJ = ""; er.valorJ = valor; }
-            if (er.origemK == nomeUnidade) { er.origemK = ""; er.valorK = valor; }
+            if (!er.ocupado) continue;
+            if (er.origemJ == nomeUnidade) {
+                er.origemJ.clear();
+                er.valorJ = valor;
+            }
+            if (er.origemK == nomeUnidade) {
+                er.origemK.clear();
+                er.valorK = valor;
+            }
         }
     }
 
-    // hazards de memória e forwarding para LOAD
-    bool checarHazardLoadEForward(BufferLS& loadBuf) {
+    bool checarHazardLoadEForward(BufferLoad& loadBuf) {
         loadBuf.hasForward = false;
-        loadBuf.forwardValue.clear();
+        loadBuf.forwardVal = 0;
 
-        if (!loadBuf.origemRs.empty()) return true; // ainda depende do Rs
+        if (!loadBuf.origemBase.empty()) return true; // base ainda pendente
 
-        int loadBase = obterValorOperando(loadBuf.valorRs);
-        int loadAddr = loadBase + loadBuf.instrucao->offsetImediato;
+        int loadAddr = loadBuf.baseVal + loadBuf.instrucao->offsetImediato;
 
-        for (int i = 0; i < numBuffersArmazenamento; i++) {
-            BufferLS& st = buffersArmazenamento[i];
-            if (!st.ocupado || st.instrucao == nullptr) continue;
+        bool existeStoreAntigoMesmoEndNaoPronto = false;
+        int melhorEmit = -1;
+        int melhorVal = 0;
 
-            // só STORE mais antigo
-            if (st.instrucao->status.emitido == -1) continue;
-            if (loadBuf.instrucao->status.emitido == -1) continue;
-            if (st.instrucao->status.emitido > loadBuf.instrucao->status.emitido) continue;
+        for (int i = 0; i < numBuffersArmazenamento; ++i) {
+            BufferStore& st = buffersArmazenamento[i];
+            if (!st.ocupado || !st.instrucao) continue;
 
-            // endereço do STORE ainda desconhecido
-            if (!st.origemRs.empty()) return true;
+            int emitSt = st.instrucao->status.emitido;
+            int emitLd = loadBuf.instrucao->status.emitido;
+            if (emitSt == -1 || emitSt > emitLd) continue; // apenas stores mais antigos
 
-            int stBase = obterValorOperando(st.valorRs);
-            int stAddr = stBase + st.instrucao->offsetImediato;
+            if (!st.origemBase.empty()) {
+                // endereço do STORE não resolvido
+                existeStoreAntigoMesmoEndNaoPronto = true;
+                continue;
+            }
 
+            int stAddr = st.baseVal + st.instrucao->offsetImediato;
             if (stAddr == loadAddr) {
-                if (isValueReadyString(st.fu)) {
-                    loadBuf.hasForward = true;
-                    loadBuf.forwardValue = st.fu;
-                    return false; // libera com forwarding
+                if (st.origemVal.empty()) {
+                    // valor pronto
+                    if (emitSt > melhorEmit) {
+                        melhorEmit = emitSt;
+                        melhorVal = st.value;
+                    }
                 } else {
-                    return true;  // bloqueia atrás do STORE
+                    // valor ainda não pronto
+                    existeStoreAntigoMesmoEndNaoPronto = true;
                 }
             }
         }
-        return false; // sem conflito
+
+        if (existeStoreAntigoMesmoEndNaoPronto) return true;
+        if (melhorEmit != -1) {
+            loadBuf.hasForward = true;
+            loadBuf.forwardVal = melhorVal;
+        }
+        return false;
     }
 
-    // emissão (Issue)
     int emitirInstrucao(int indiceInstrucao) {
         if (indiceInstrucao >= numInstrucoes) return -2;
-        if (branchPending) return -1; // segura emissão durante BNE pendente
+        if (branchPending) return -1;
 
         Instrucao& instr = instrucoes[indiceInstrucao];
-        int indiceBuffer;
 
         if (instr.tipoInstrucao == TiposInstrucao::CARREGA) {
-            indiceBuffer = encontrarBufferLoadLivre();
-            if (indiceBuffer == -1) { logEventos += "-> Instrucao " + to_string(indiceInstrucao) + " nao emitida por falta de Buffer de Carga.\n"; return -1; }
-            BufferLS& buf = buffersCarregamento[indiceBuffer];
-
-            buf.ocupado = true; buf.instrucao = &instr;
-            instr.status.emitido = cicloAtual; instr.status.ciclosRestantesExecucao = ciclosLS;
-
-            int regRsNum = atoi(&instr.regFonte1.c_str()[1]);
-            buf.origemRs = estadoRegistradores[regRsNum].unidadeEscritora;
-            buf.valorRs = buf.origemRs.empty() ? ("R(" + instr.regFonte1 + ")") : "";
-            buf.endereco = instr.regFonte1 + " + " + to_string(instr.offsetImediato);
-
-            int regRetornoNum = atoi(&instr.regFonte2.c_str()[1]);
-            estadoRegistradores[regRetornoNum].unidadeEscritora = buf.nome;
-            buf.fu = "";
-            buf.hasForward = false; buf.forwardValue.clear();
-
-            logEventos += "-> Instrucao " + to_string(indiceInstrucao) + " emitida para " + buf.nome + " (LOAD).\n";
-        }
-        else if (instr.tipoInstrucao == TiposInstrucao::ARMAZENA) {
-            indiceBuffer = encontrarBufferStoreLivre();
-            if (indiceBuffer == -1) { logEventos += "-> Instrucao " + to_string(indiceInstrucao) + " nao emitida por falta de Buffer de Armazenamento.\n"; return -1; }
-            BufferLS& buf = buffersArmazenamento[indiceBuffer];
-
-            buf.ocupado = true; buf.instrucao = &instr;
-            instr.status.emitido = cicloAtual; instr.status.ciclosRestantesExecucao = ciclosLS;
-
-            int regRsNum = atoi(&instr.regFonte1.c_str()[1]);
-            buf.origemRs = estadoRegistradores[regRsNum].unidadeEscritora;
-            buf.valorRs = buf.origemRs.empty() ? ("R(" + instr.regFonte1 + ")") : "";
-            buf.endereco = instr.regFonte1 + " + " + to_string(instr.offsetImediato);
-
-            int regOrigemNum = atoi(&instr.regFonte2.c_str()[1]);
-            buf.fu = estadoRegistradores[regOrigemNum].unidadeEscritora;
-            if (buf.fu.empty()) buf.fu = "R(" + instr.regFonte2 + ")";
-
-            logEventos += "-> Instrucao " + to_string(indiceInstrucao) + " emitida para " + buf.nome + " (STORE).\n";
-        }
-        else if (instr.tipoInstrucao == TiposInstrucao::SOMA || instr.tipoInstrucao == TiposInstrucao::SUBT) {
-            indiceBuffer = encontrarERAddSubLivre();
-            if (indiceBuffer == -1) { logEventos += "-> Instrucao " + to_string(indiceInstrucao) + " nao emitida por falta de ER ADD/SUB.\n"; return -1; }
-            EstacaoReserva& er = estacoesAddSub[indiceBuffer];
-
-            er.ocupado = true; er.tipoInstrucao = instr.tipoInstrucao; er.instrucao = &instr;
-            instr.status.emitido = cicloAtual; instr.status.ciclosRestantesExecucao = ciclosAddSub;
-
-            int regRsNum = atoi(&instr.regFonte1.c_str()[1]);
-            er.origemJ = estadoRegistradores[regRsNum].unidadeEscritora;
-            er.valorJ = er.origemJ.empty() ? "R(" + instr.regFonte1 + ")" : "";
-
-            int regRtNum = atoi(&instr.regFonte2.c_str()[1]);
-            er.origemK = estadoRegistradores[regRtNum].unidadeEscritora;
-            er.valorK = er.origemK.empty() ? "R(" + instr.regFonte2 + ")" : "";
-
-            int regRdNum = atoi(&instr.regDestino.c_str()[1]);
-            estadoRegistradores[regRdNum].unidadeEscritora = er.nome;
-
-            logEventos += "-> Instrucao " + to_string(indiceInstrucao) + " emitida para " + er.nome + " (ADD/SUB).\n";
-        }
-        else if (instr.tipoInstrucao == TiposInstrucao::MULT || instr.tipoInstrucao == TiposInstrucao::DIVI) {
-            indiceBuffer = encontrarERMultDivLivre();
-            if (indiceBuffer == -1) { logEventos += "-> Instrucao " + to_string(indiceInstrucao) + " nao emitida por falta de ER MUL/DIV.\n"; return -1; }
-            EstacaoReserva& er = estacoesMultDiv[indiceBuffer];
-
-            er.ocupado = true; er.tipoInstrucao = instr.tipoInstrucao; er.instrucao = &instr;
+            int idx = encontrarBufferLoadLivre();
+            if (idx == -1) {
+                logEventos += "-> Instrucao " + to_string(indiceInstrucao) +
+                              " nao emitida (sem Buffer LOAD).\n";
+                return -1;
+            }
+            BufferLoad& lb = buffersCarregamento[idx];
+            lb.ocupado = true;
+            lb.instrucao = &instr;
             instr.status.emitido = cicloAtual;
-            instr.status.ciclosRestantesExecucao = (instr.tipoInstrucao == TiposInstrucao::MULT) ? ciclosMult : ciclosDiv;
+            instr.status.ciclosRestantesExecucao = ciclosLS;
+            lb.ciclosRestantes = ciclosLS;
 
-            int regRsNum = atoi(&instr.regFonte1.c_str()[1]);
-            er.origemJ = estadoRegistradores[regRsNum].unidadeEscritora;
-            er.valorJ = er.origemJ.empty() ? "R(" + instr.regFonte1 + ")" : "";
+            int rsIdx = regIndex(instr.regFonte1);
+            if (rsIdx < 0) throw runtime_error("Registrador invalido: " + instr.regFonte1);
+            lb.origemBase = estadoRegistradores[rsIdx].unidadeEscritora;
+            if (lb.origemBase.empty())
+                lb.baseVal = obterValorRegistrador(instr.regFonte1);
+            lb.offset = instr.offsetImediato;
 
-            int regRtNum = atoi(&instr.regFonte2.c_str()[1]);
-            er.origemK = estadoRegistradores[regRtNum].unidadeEscritora;
-            er.valorK = er.origemK.empty() ? "R(" + instr.regFonte2 + ")" : "";
+            int rdIdx = regIndex(instr.regFonte2);
+            if (rdIdx < 0) throw runtime_error("Registrador invalido: " + instr.regFonte2);
+            lb.destReg = rdIdx;
+            estadoRegistradores[rdIdx].unidadeEscritora = lb.nome;
 
-            int regRdNum = atoi(&instr.regDestino.c_str()[1]);
-            estadoRegistradores[regRdNum].unidadeEscritora = er.nome;
+            lb.resultReady = false;
+            lb.hasForward = false;
+            lb.forwardVal = 0;
 
-            logEventos += "-> Instrucao " + to_string(indiceInstrucao) + " emitida para " + er.nome + " (MUL/DIV).\n";
-        }
-        else if (instr.tipoInstrucao == TiposInstrucao::BNE) {
+            logEventos += "-> Instrucao " + to_string(indiceInstrucao) +
+                          " emitida para " + lb.nome + " (LOAD).\n";
+            return 0;
+        } else if (instr.tipoInstrucao == TiposInstrucao::ARMAZENA) {
+            int idx = encontrarBufferStoreLivre();
+            if (idx == -1) {
+                logEventos += "-> Instrucao " + to_string(indiceInstrucao) +
+                              " nao emitida (sem Buffer STORE).\n";
+                return -1;
+            }
+            BufferStore& sb = buffersArmazenamento[idx];
+            sb.ocupado = true;
+            sb.instrucao = &instr;
+            instr.status.emitido = cicloAtual;
+            instr.status.ciclosRestantesExecucao = ciclosLS;
+            sb.ciclosRestantes = ciclosLS;
+
+            int rsIdx = regIndex(instr.regFonte1);
+            if (rsIdx < 0) throw runtime_error("Registrador invalido: " + instr.regFonte1);
+            sb.origemBase = estadoRegistradores[rsIdx].unidadeEscritora;
+            if (sb.origemBase.empty())
+                sb.baseVal = obterValorRegistrador(instr.regFonte1);
+            sb.offset = instr.offsetImediato;
+
+            int rtIdx = regIndex(instr.regFonte2);
+            if (rtIdx < 0) throw runtime_error("Registrador invalido: " + instr.regFonte2);
+            sb.origemVal = estadoRegistradores[rtIdx].unidadeEscritora;
+            if (sb.origemVal.empty())
+                sb.value = obterValorRegistrador(instr.regFonte2);
+
+            logEventos += "-> Instrucao " + to_string(indiceInstrucao) +
+                          " emitida para " + sb.nome + " (STORE).\n";
+            return 0;
+        } else if (instr.tipoInstrucao == TiposInstrucao::SOMA ||
+                   instr.tipoInstrucao == TiposInstrucao::SUBT) {
             int idx = encontrarERAddSubLivre();
-            if (idx == -1) { logEventos += "-> Instrucao " + to_string(indiceInstrucao) + " nao emitida: ER indisponivel (BNE).\n"; return -1; }
+            if (idx == -1) {
+                logEventos += "-> Instrucao " + to_string(indiceInstrucao) +
+                              " nao emitida (sem ER ADD/SUB).\n";
+                return -1;
+            }
             EstacaoReserva& er = estacoesAddSub[idx];
+            er.ocupado = true;
+            er.tipoInstrucao = instr.tipoInstrucao;
+            er.instrucao = &instr;
+            instr.status.emitido = cicloAtual;
+            instr.status.ciclosRestantesExecucao = ciclosAddSub;
+            er.ciclosRestantes = ciclosAddSub;
 
-            er.ocupado = true; er.tipoInstrucao = TiposInstrucao::BNE; er.instrucao = &instr;
-            instr.status.emitido = cicloAtual; instr.status.ciclosRestantesExecucao = 1;
+            int rsIdx = regIndex(instr.regFonte1);
+            if (rsIdx < 0) throw runtime_error("Registrador invalido: " + instr.regFonte1);
+            er.origemJ = estadoRegistradores[rsIdx].unidadeEscritora;
+            if (er.origemJ.empty())
+                er.valorJ = obterValorRegistrador(instr.regFonte1);
 
-            int regRsNum = atoi(&instr.regFonte1.c_str()[1]);
-            er.origemJ = estadoRegistradores[regRsNum].unidadeEscritora;
-            er.valorJ = er.origemJ.empty() ? "R(" + instr.regFonte1 + ")" : "";
+            int rtIdx = regIndex(instr.regFonte2);
+            if (rtIdx < 0) throw runtime_error("Registrador invalido: " + instr.regFonte2);
+            er.origemK = estadoRegistradores[rtIdx].unidadeEscritora;
+            if (er.origemK.empty())
+                er.valorK = obterValorRegistrador(instr.regFonte2);
 
-            int regRtNum = atoi(&instr.regFonte2.c_str()[1]);
-            er.origemK = estadoRegistradores[regRtNum].unidadeEscritora;
-            er.valorK = er.origemK.empty() ? "R(" + instr.regFonte2 + ")" : "";
+            int rdIdx = regIndex(instr.regDestino);
+            if (rdIdx < 0) throw runtime_error("Registrador invalido: " + instr.regDestino);
+            er.destReg = rdIdx;
+            estadoRegistradores[rdIdx].unidadeEscritora = er.nome;
+
+            logEventos += "-> Instrucao " + to_string(indiceInstrucao) +
+                          " emitida para " + er.nome + " (ADD/SUB).\n";
+            return 0;
+        } else if (instr.tipoInstrucao == TiposInstrucao::MULT ||
+                   instr.tipoInstrucao == TiposInstrucao::DIVI) {
+            int idx = encontrarERMultDivLivre();
+            if (idx == -1) {
+                logEventos += "-> Instrucao " + to_string(indiceInstrucao) +
+                              " nao emitida (sem ER MUL/DIV).\n";
+                return -1;
+            }
+            EstacaoReserva& er = estacoesMultDiv[idx];
+            er.ocupado = true;
+            er.tipoInstrucao = instr.tipoInstrucao;
+            er.instrucao = &instr;
+            instr.status.emitido = cicloAtual;
+            int lat = (instr.tipoInstrucao == TiposInstrucao::MULT) ? ciclosMult : ciclosDiv;
+            instr.status.ciclosRestantesExecucao = lat;
+            er.ciclosRestantes = lat;
+
+            int rsIdx = regIndex(instr.regFonte1);
+            if (rsIdx < 0) throw runtime_error("Registrador invalido: " + instr.regFonte1);
+            er.origemJ = estadoRegistradores[rsIdx].unidadeEscritora;
+            if (er.origemJ.empty())
+                er.valorJ = obterValorRegistrador(instr.regFonte1);
+
+            int rtIdx = regIndex(instr.regFonte2);
+            if (rtIdx < 0) throw runtime_error("Registrador invalido: " + instr.regFonte2);
+            er.origemK = estadoRegistradores[rtIdx].unidadeEscritora;
+            if (er.origemK.empty())
+                er.valorK = obterValorRegistrador(instr.regFonte2);
+
+            int rdIdx = regIndex(instr.regDestino);
+            if (rdIdx < 0) throw runtime_error("Registrador invalido: " + instr.regDestino);
+            er.destReg = rdIdx;
+            estadoRegistradores[rdIdx].unidadeEscritora = er.nome;
+
+            logEventos += "-> Instrucao " + to_string(indiceInstrucao) +
+                          " emitida para " + er.nome + " (MUL/DIV).\n";
+            return 0;
+        } else if (instr.tipoInstrucao == TiposInstrucao::BNE) {
+            int idx = encontrarERAddSubLivre();
+            if (idx == -1) {
+                logEventos += "-> Instrucao " + to_string(indiceInstrucao) +
+                              " nao emitida (sem ER BNE).\n";
+                return -1;
+            }
+            EstacaoReserva& er = estacoesAddSub[idx];
+            er.ocupado = true;
+            er.tipoInstrucao = TiposInstrucao::BNE;
+            er.instrucao = &instr;
+            instr.status.emitido = cicloAtual;
+            instr.status.ciclosRestantesExecucao = 1;
+            er.ciclosRestantes = 1;
+            er.destReg = -1;
+
+            int rsIdx = regIndex(instr.regFonte1);
+            if (rsIdx < 0) throw runtime_error("Registrador invalido: " + instr.regFonte1);
+            er.origemJ = estadoRegistradores[rsIdx].unidadeEscritora;
+            if (er.origemJ.empty())
+                er.valorJ = obterValorRegistrador(instr.regFonte1);
+
+            int rtIdx = regIndex(instr.regFonte2);
+            if (rtIdx < 0) throw runtime_error("Registrador invalido: " + instr.regFonte2);
+            er.origemK = estadoRegistradores[rtIdx].unidadeEscritora;
+            if (er.origemK.empty())
+                er.valorK = obterValorRegistrador(instr.regFonte2);
 
             branchPending = true;
             branchResolved = false;
             branchIssuedIndex = indiceInstrucao;
 
-            logEventos += "-> Instrucao " + to_string(indiceInstrucao) + " emitida para " + er.nome + " (BNE).\n";
+            logEventos += "-> Instrucao " + to_string(indiceInstrucao) +
+                          " emitida para " + er.nome + " (BNE).\n";
+            return 0;
         }
 
         return 0;
     }
 
-    // avanço de execução de todas as FUs
     void executar() {
-        // LOAD
+        // LOADs
         for (int i = 0; i < numBuffersCarregamento; i++) {
-            BufferLS& buf = buffersCarregamento[i];
-            if (!buf.ocupado) continue;
+            BufferLoad& lb = buffersCarregamento[i];
+            if (!lb.ocupado || !lb.instrucao) continue;
 
-            bool bloqueia = checarHazardLoadEForward(buf);
-            if (bloqueia) continue;
+            if (checarHazardLoadEForward(lb)) continue;
 
-            if (buf.instrucao->status.inicioExecucao == -1) {
-                if (buf.instrucao->status.emitido == cicloAtual) continue;
-                buf.instrucao->status.inicioExecucao = cicloAtual;
-                logEventos += "-> Buffer LOAD " + buf.nome + " iniciou execucao.\n";
+            if (lb.instrucao->status.inicioExecucao == -1) {
+                if (lb.instrucao->status.emitido == cicloAtual) continue;
+                lb.instrucao->status.inicioExecucao = cicloAtual;
+                logEventos += "-> " + lb.nome + " iniciou execucao (LOAD).\n";
             }
-            if (buf.instrucao->status.ciclosRestantesExecucao > 0) {
-                buf.instrucao->status.ciclosRestantesExecucao--;
-                logEventos += "-> Buffer LOAD " + buf.nome + " completou 1 ciclo. Restantes: " + to_string(buf.instrucao->status.ciclosRestantesExecucao) + ".\n";
-                if (buf.instrucao->status.ciclosRestantesExecucao == 0) {
-                    buf.instrucao->status.fimExecucao = cicloAtual;
-                    logEventos += "-> Buffer LOAD " + buf.nome + " completou execucao.\n";
+
+            if (lb.ciclosRestantes > 0) {
+                lb.ciclosRestantes--;
+                lb.instrucao->status.ciclosRestantesExecucao = lb.ciclosRestantes;
+                logEventos += "-> " + lb.nome + " completou 1 ciclo. Restantes: " +
+                              to_string(lb.ciclosRestantes) + ".\n";
+                if (lb.ciclosRestantes == 0) {
+                    lb.instrucao->status.fimExecucao = cicloAtual;
+                    lb.resultReady = true;
+                    if (lb.hasForward)
+                        lb.resultado = lb.forwardVal;
+                    else {
+                        int addr = lb.baseVal + lb.instrucao->offsetImediato;
+                        lb.resultado = lerMemoria(addr);
+                    }
+                    logEventos += "-> " + lb.nome + " completou execucao.\n";
                 }
             }
         }
 
-        // STORE
+        // STOREs
         for (int i = 0; i < numBuffersArmazenamento; i++) {
-            BufferLS& buf = buffersArmazenamento[i];
-            if (!buf.ocupado) continue;
-            if (!buf.origemRs.empty()) continue;
-            if (!isValueReadyString(buf.fu)) continue;
+            BufferStore& sb = buffersArmazenamento[i];
+            if (!sb.ocupado || !sb.instrucao) continue;
+            if (!sb.origemBase.empty()) continue;
+            if (!sb.origemVal.empty()) continue;
 
-            if (buf.instrucao->status.inicioExecucao == -1) {
-                if (buf.instrucao->status.emitido == cicloAtual) continue;
-                buf.instrucao->status.inicioExecucao = cicloAtual;
-                logEventos += "-> Buffer STORE " + buf.nome + " iniciou execucao.\n";
+            if (sb.instrucao->status.inicioExecucao == -1) {
+                if (sb.instrucao->status.emitido == cicloAtual) continue;
+                sb.instrucao->status.inicioExecucao = cicloAtual;
+                logEventos += "-> " + sb.nome + " iniciou execucao (STORE).\n";
             }
-            if (buf.instrucao->status.ciclosRestantesExecucao > 0) {
-                buf.instrucao->status.ciclosRestantesExecucao--;
-                logEventos += "-> Buffer STORE " + buf.nome + " completou 1 ciclo. Restantes: " + to_string(buf.instrucao->status.ciclosRestantesExecucao) + ".\n";
-                if (buf.instrucao->status.ciclosRestantesExecucao == 0) {
-                    buf.instrucao->status.fimExecucao = cicloAtual;
-                    logEventos += "-> Buffer STORE " + buf.nome + " completou execucao.\n";
+
+            if (sb.ciclosRestantes > 0) {
+                sb.ciclosRestantes--;
+                sb.instrucao->status.ciclosRestantesExecucao = sb.ciclosRestantes;
+                logEventos += "-> " + sb.nome + " completou 1 ciclo. Restantes: " +
+                              to_string(sb.ciclosRestantes) + ".\n";
+                if (sb.ciclosRestantes == 0) {
+                    sb.instrucao->status.fimExecucao = cicloAtual;
+                    logEventos += "-> " + sb.nome + " completou execucao.\n";
                 }
             }
         }
@@ -539,18 +717,23 @@ struct Tomasulo {
         // ADD/SUB/BNE
         for (int i = 0; i < numEstacoesAddSub; i++) {
             EstacaoReserva& er = estacoesAddSub[i];
-            if (!er.ocupado || !er.origemJ.empty() || !er.origemK.empty()) continue;
+            if (!er.ocupado || !er.instrucao) continue;
+            if (!er.origemJ.empty() || !er.origemK.empty()) continue;
+
             if (er.instrucao->status.inicioExecucao == -1) {
                 if (er.instrucao->status.emitido == cicloAtual) continue;
                 er.instrucao->status.inicioExecucao = cicloAtual;
-                logEventos += "-> ER " + er.nome + " iniciou execucao.\n";
+                logEventos += "-> " + er.nome + " iniciou execucao (" + er.tipoInstrucao + ").\n";
             }
-            if (er.instrucao->status.ciclosRestantesExecucao > 0) {
-                er.instrucao->status.ciclosRestantesExecucao--;
-                logEventos += "-> ER " + er.nome + " completou 1 ciclo. Restantes: " + to_string(er.instrucao->status.ciclosRestantesExecucao) + ".\n";
-                if (er.instrucao->status.ciclosRestantesExecucao == 0) {
+
+            if (er.ciclosRestantes > 0) {
+                er.ciclosRestantes--;
+                er.instrucao->status.ciclosRestantesExecucao = er.ciclosRestantes;
+                logEventos += "-> " + er.nome + " completou 1 ciclo. Restantes: " +
+                              to_string(er.ciclosRestantes) + ".\n";
+                if (er.ciclosRestantes == 0) {
                     er.instrucao->status.fimExecucao = cicloAtual;
-                    logEventos += "-> ER " + er.nome + " completou execucao.\n";
+                    logEventos += "-> " + er.nome + " completou execucao.\n";
                 }
             }
         }
@@ -558,24 +741,28 @@ struct Tomasulo {
         // MUL/DIV
         for (int i = 0; i < numEstacoesMultDiv; i++) {
             EstacaoReserva& er = estacoesMultDiv[i];
-            if (!er.ocupado || !er.origemJ.empty() || !er.origemK.empty()) continue;
+            if (!er.ocupado || !er.instrucao) continue;
+            if (!er.origemJ.empty() || !er.origemK.empty()) continue;
+
             if (er.instrucao->status.inicioExecucao == -1) {
                 if (er.instrucao->status.emitido == cicloAtual) continue;
                 er.instrucao->status.inicioExecucao = cicloAtual;
-                logEventos += "-> ER " + er.nome + " iniciou execucao.\n";
+                logEventos += "-> " + er.nome + " iniciou execucao (" + er.tipoInstrucao + ").\n";
             }
-            if (er.instrucao->status.ciclosRestantesExecucao > 0) {
-                er.instrucao->status.ciclosRestantesExecucao--;
-                logEventos += "-> ER " + er.nome + " completou 1 ciclo. Restantes: " + to_string(er.instrucao->status.ciclosRestantesExecucao) + ".\n";
-                if (er.instrucao->status.ciclosRestantesExecucao == 0) {
+
+            if (er.ciclosRestantes > 0) {
+                er.ciclosRestantes--;
+                er.instrucao->status.ciclosRestantesExecucao = er.ciclosRestantes;
+                logEventos += "-> " + er.nome + " completou 1 ciclo. Restantes: " +
+                              to_string(er.ciclosRestantes) + ".\n";
+                if (er.ciclosRestantes == 0) {
                     er.instrucao->status.fimExecucao = cicloAtual;
-                    logEventos += "-> ER " + er.nome + " completou execucao.\n";
+                    logEventos += "-> " + er.nome + " completou execucao.\n";
                 }
             }
         }
     }
 
-    // um único write-back no CDB por ciclo; STORE escreve direto em memória
     void escreverResultado_CDB_unico() {
         bool escreveu = false;
         for (int turn = 0; turn < 3 && !escreveu; ++turn) {
@@ -585,13 +772,14 @@ struct Tomasulo {
                 // ADD/SUB/BNE
                 for (int i = 0; i < numEstacoesAddSub; i++) {
                     EstacaoReserva& er = estacoesAddSub[i];
-                    if (!er.ocupado || er.instrucao == nullptr) continue;
-                    if (er.instrucao->status.ciclosRestantesExecucao != 0) continue;
+                    if (!er.ocupado || !er.instrucao) continue;
+                    if (er.ciclosRestantes != 0) continue;
                     if (er.instrucao->status.fimExecucao == cicloAtual) continue;
+                    if (er.instrucao->status.escritaResultado != -1) continue;
 
                     if (er.tipoInstrucao == TiposInstrucao::BNE) {
-                        int vj = obterValorOperando(er.valorJ);
-                        int vk = obterValorOperando(er.valorK);
+                        int vj = er.valorJ;
+                        int vk = er.valorK;
                         bool taken = (vj != vk);
                         branchResolved = true;
                         branchTaken = taken;
@@ -605,32 +793,42 @@ struct Tomasulo {
                         logEventos += "-> BNE resolvido: " + string(taken ? "TAKEN" : "NOT TAKEN") + ".\n";
 
                         er.ocupado = false;
-                        er.tipoInstrucao = er.valorJ = er.valorK = er.origemJ = er.origemK = "";
+                        er.tipoInstrucao.clear();
+                        er.origemJ.clear();
+                        er.origemK.clear();
                         er.instrucao = nullptr;
+                        er.destReg = -1;
+                        er.ciclosRestantes = -1;
 
                         cdb_rr = (cls + 1) % 3;
                         escreveu = true;
                         break;
                     } else {
-                        er.instrucao->status.escritaResultado = cicloAtual;
-                        logEventos += "-> ER " + er.nome + " escreveu resultado no CDB.\n";
-
-                        int valJ = obterValorOperando(er.valorJ);
-                        int valK = obterValorOperando(er.valorK);
                         int resultado = 0;
-                        if (er.tipoInstrucao == TiposInstrucao::SOMA) resultado = valJ + valK;
-                        else if (er.tipoInstrucao == TiposInstrucao::SUBT) resultado = valJ - valK;
+                        if (er.tipoInstrucao == TiposInstrucao::SOMA)
+                            resultado = er.valorJ + er.valorK;
+                        else if (er.tipoInstrucao == TiposInstrucao::SUBT)
+                            resultado = er.valorJ - er.valorK;
 
-                        int regRdNum = atoi(&er.instrucao->regDestino.c_str()[1]);
-                        if (estadoRegistradores[regRdNum].unidadeEscritora == er.nome) {
-                            estadoRegistradores[regRdNum].unidadeEscritora = "";
-                            for (auto& r : registradores) if (r.nome == er.instrucao->regDestino) { r.valor = resultado; break; }
+                        er.instrucao->status.escritaResultado = cicloAtual;
+                        logEventos += "-> " + er.nome + " escreveu resultado no CDB.\n";
+
+                        if (er.destReg >= 0 &&
+                            estadoRegistradores[er.destReg].unidadeEscritora == er.nome) {
+                            estadoRegistradores[er.destReg].unidadeEscritora.clear();
+                            registradores[er.destReg].valor = resultado;
                         }
 
-                        er.ocupado = false; er.tipoInstrucao = er.valorJ = er.valorK = er.origemJ = er.origemK = "";
-                        er.instrucao = nullptr;
+                        transmitirResultado(resultado, er.nome);
 
-                        transmitirResultado(to_string(resultado), estacoesAddSub[i].nome);
+                        er.ocupado = false;
+                        er.tipoInstrucao.clear();
+                        er.instrucao = nullptr;
+                        er.origemJ.clear();
+                        er.origemK.clear();
+                        er.ciclosRestantes = -1;
+                        er.destReg = -1;
+
                         cdb_rr = (cls + 1) % 3;
                         escreveu = true;
                         break;
@@ -640,29 +838,36 @@ struct Tomasulo {
                 // MUL/DIV
                 for (int i = 0; i < numEstacoesMultDiv; i++) {
                     EstacaoReserva& er = estacoesMultDiv[i];
-                    if (!er.ocupado || er.instrucao == nullptr) continue;
-                    if (er.instrucao->status.ciclosRestantesExecucao != 0) continue;
+                    if (!er.ocupado || !er.instrucao) continue;
+                    if (er.ciclosRestantes != 0) continue;
                     if (er.instrucao->status.fimExecucao == cicloAtual) continue;
+                    if (er.instrucao->status.escritaResultado != -1) continue;
+
+                    int resultado = 0;
+                    if (er.tipoInstrucao == TiposInstrucao::MULT)
+                        resultado = er.valorJ * er.valorK;
+                    else if (er.tipoInstrucao == TiposInstrucao::DIVI)
+                        resultado = (er.valorK == 0) ? 0 : er.valorJ / er.valorK;
 
                     er.instrucao->status.escritaResultado = cicloAtual;
-                    logEventos += "-> ER " + er.nome + " escreveu resultado no CDB.\n";
+                    logEventos += "-> " + er.nome + " escreveu resultado no CDB.\n";
 
-                    int valJ = obterValorOperando(er.valorJ);
-                    int valK = obterValorOperando(er.valorK);
-                    int resultado = 0;
-                    if (er.tipoInstrucao == TiposInstrucao::MULT) resultado = valJ * valK;
-                    else if (er.tipoInstrucao == TiposInstrucao::DIVI) resultado = (valK == 0) ? 0 : valJ / valK;
-
-                    int regRdNum = atoi(&er.instrucao->regDestino.c_str()[1]);
-                    if (estadoRegistradores[regRdNum].unidadeEscritora == er.nome) {
-                        estadoRegistradores[regRdNum].unidadeEscritora = "";
-                        for (auto& r : registradores) if (r.nome == er.instrucao->regDestino) { r.valor = resultado; break; }
+                    if (er.destReg >= 0 &&
+                        estadoRegistradores[er.destReg].unidadeEscritora == er.nome) {
+                        estadoRegistradores[er.destReg].unidadeEscritora.clear();
+                        registradores[er.destReg].valor = resultado;
                     }
 
-                    er.ocupado = false; er.tipoInstrucao = er.valorJ = er.valorK = er.origemJ = er.origemK = "";
-                    er.instrucao = nullptr;
+                    transmitirResultado(resultado, er.nome);
 
-                    transmitirResultado(to_string(resultado), estacoesMultDiv[i].nome);
+                    er.ocupado = false;
+                    er.tipoInstrucao.clear();
+                    er.instrucao = nullptr;
+                    er.origemJ.clear();
+                    er.origemK.clear();
+                    er.ciclosRestantes = -1;
+                    er.destReg = -1;
+
                     cdb_rr = (cls + 1) % 3;
                     escreveu = true;
                     break;
@@ -670,35 +875,30 @@ struct Tomasulo {
             } else {
                 // LOAD
                 for (int i = 0; i < numBuffersCarregamento; i++) {
-                    BufferLS& buf = buffersCarregamento[i];
-                    if (!buf.ocupado || buf.instrucao == nullptr) continue;
-                    if (buf.instrucao->status.ciclosRestantesExecucao != 0) continue;
-                    if (buf.instrucao->status.fimExecucao == cicloAtual) continue;
+                    BufferLoad& lb = buffersCarregamento[i];
+                    if (!lb.ocupado || !lb.instrucao) continue;
+                    if (!lb.resultReady) continue;
+                    if (lb.instrucao->status.escritaResultado != -1) continue;
 
-                    buf.instrucao->status.escritaResultado = cicloAtual;
-                    logEventos += "-> Buffer LOAD " + buf.nome + " escreveu resultado no CDB.\n";
+                    lb.instrucao->status.escritaResultado = cicloAtual;
+                    logEventos += "-> " + lb.nome + " escreveu resultado no CDB.\n";
 
-                    int valRs = obterValorOperando(buf.valorRs);
-                    int endMemoria = valRs + buf.instrucao->offsetImediato;
-
-                    int valorLido = 0;
-                    if (buf.hasForward) {
-                        valorLido = obterValorOperando(buf.forwardValue);
-                    } else {
-                        for (const auto& m : memoria) if (m.nome == to_string(endMemoria)) { valorLido = m.valor; break; }
+                    if (lb.destReg >= 0 &&
+                        estadoRegistradores[lb.destReg].unidadeEscritora == lb.nome) {
+                        estadoRegistradores[lb.destReg].unidadeEscritora.clear();
+                        registradores[lb.destReg].valor = lb.resultado;
                     }
 
-                    int regRetornoNum = atoi(&buf.instrucao->regFonte2.c_str()[1]);
-                    if (estadoRegistradores[regRetornoNum].unidadeEscritora == buf.nome) {
-                        estadoRegistradores[regRetornoNum].unidadeEscritora = "";
-                        for (auto& r : registradores) if (r.nome == buf.instrucao->regFonte2) { r.valor = valorLido; break; }
-                    }
+                    transmitirResultado(lb.resultado, lb.nome);
 
-                    buf.ocupado = false; buf.endereco = buf.origemRs = buf.valorRs = buf.fu = "";
-                    buf.hasForward = false; buf.forwardValue.clear();
-                    buf.instrucao = nullptr;
+                    lb.ocupado = false;
+                    lb.instrucao = nullptr;
+                    lb.ciclosRestantes = -1;
+                    lb.resultReady = false;
+                    lb.origemBase.clear();
+                    lb.hasForward = false;
+                    lb.forwardVal = 0;
 
-                    transmitirResultado(to_string(valorLido), buffersCarregamento[i].nome);
                     cdb_rr = (cls + 1) % 3;
                     escreveu = true;
                     break;
@@ -707,43 +907,236 @@ struct Tomasulo {
         }
     }
 
-    // STORE “commit” direto na memória (fora do CDB)
     void escreverResultado_STOREs() {
-        for (int i = 0; i < numBuffersArmazenamento; i++) {
-            BufferLS& buf = buffersArmazenamento[i];
-            if (!buf.ocupado || buf.instrucao == nullptr) continue;
-            if (buf.instrucao->status.ciclosRestantesExecucao != 0) continue;
-            if (buf.instrucao->status.fimExecucao == cicloAtual) continue;
+        struct Cand { BufferStore* buf; int emit; };
+        vector<Cand> prontos;
 
-            buf.instrucao->status.escritaResultado = cicloAtual;
-            logEventos += "-> Buffer STORE " + buf.nome + " escreveu resultado na memoria.\n";
+        for (int i = 0; i < numBuffersArmazenamento; ++i) {
+            BufferStore& sb = buffersArmazenamento[i];
+            if (!sb.ocupado || !sb.instrucao) continue;
+            if (sb.ciclosRestantes != 0) continue;
+            if (sb.instrucao->status.fimExecucao == -1) continue;
+            if (sb.instrucao->status.escritaResultado != -1) continue;
+            prontos.push_back({ &sb, sb.instrucao->status.emitido });
+        }
 
-            int valRs = obterValorOperando(buf.valorRs);
-            int endMemoria = valRs + buf.instrucao->offsetImediato;
-            int valorArmazenar = obterValorOperando(buf.fu);
+        if (prontos.empty()) return;
 
-            Registrador novoItemMem; novoItemMem.nome = to_string(endMemoria); novoItemMem.valor = valorArmazenar;
-            bool encontrado = false;
-            for (auto& m : memoria) if (m.nome == novoItemMem.nome) { m.valor = novoItemMem.valor; encontrado = true; break; }
-            if (!encontrado) memoria.push_back(novoItemMem);
+        sort(prontos.begin(), prontos.end(),
+             [](const Cand& a, const Cand& b){ return a.emit < b.emit; });
 
-            buf.ocupado = false; buf.endereco = buf.origemRs = buf.valorRs = buf.fu = ""; buf.instrucao = nullptr;
+        for (auto& c : prontos) {
+            BufferStore& sb = *c.buf;
+            if (!sb.origemBase.empty() || !sb.origemVal.empty()) continue;
+
+            int addr = sb.baseVal + sb.instrucao->offsetImediato;
+            int val  = sb.value;
+            escreverMemoria(addr, val);
+
+            sb.instrucao->status.escritaResultado = cicloAtual;
+            logEventos += "-> " + sb.nome + " comitou na memoria ["
+                          + to_string(addr) + "]=" + to_string(val) + ".\n";
+
+            sb.ocupado = false;
+            sb.instrucao = nullptr;
+            sb.ciclosRestantes = -1;
+            sb.origemBase.clear();
+            sb.origemVal.clear();
         }
     }
 
-    // verifica se ainda há algo a fazer
     bool haTrabalhoPendente(int proxIndiceInstrucao) const {
         if (proxIndiceInstrucao < numInstrucoes && !branchPending) return true;
-        for (int i = 0; i < numBuffersCarregamento; ++i) if (buffersCarregamento[i].ocupado) return true;
-        for (int i = 0; i < numBuffersArmazenamento; ++i) if (buffersArmazenamento[i].ocupado) return true;
-        for (int i = 0; i < numEstacoesAddSub; ++i) if (estacoesAddSub[i].ocupado) return true;
-        for (int i = 0; i < numEstacoesMultDiv; ++i) if (estacoesMultDiv[i].ocupado) return true;
+        for (int i = 0; i < numBuffersCarregamento; ++i)
+            if (buffersCarregamento[i].ocupado) return true;
+        for (int i = 0; i < numBuffersArmazenamento; ++i)
+            if (buffersArmazenamento[i].ocupado) return true;
+        for (int i = 0; i < numEstacoesAddSub; ++i)
+            if (estacoesAddSub[i].ocupado) return true;
+        for (int i = 0; i < numEstacoesMultDiv; ++i)
+            if (estacoesMultDiv[i].ocupado) return true;
         for (int i = 0; i < numInstrucoes; ++i)
-            if (instrucoes[i].status.emitido != -1 && instrucoes[i].status.escritaResultado == -1) return true;
+            if (instrucoes[i].status.emitido != -1 &&
+                instrucoes[i].status.escritaResultado == -1)
+                return true;
         return false;
     }
 
-    // laço principal: WB -> Execute -> Issue
+    void mostrarEstado() {
+        int y = 2;
+        irPara(2, y); cout << "Instrucoes:";
+        irPara(27, y); cout << "Emitido" << " Comeco" << " Fim" << " Escrita";
+        irPara(27, y + 1); cout << "";
+
+        int offset = 0;
+        for (int i = 0; i < numInstrucoes; i++) {
+            irPara(2, offset + y + 2);
+            string instrStr = to_string(i) + ". " + instrucoes[i].tipoInstrucao + " ";
+            if (instrucoes[i].tipoInstrucao == TiposInstrucao::CARREGA ||
+                instrucoes[i].tipoInstrucao == TiposInstrucao::ARMAZENA) {
+                instrStr += instrucoes[i].regFonte2 + ", " +
+                            to_string(instrucoes[i].offsetImediato) + "(" +
+                            instrucoes[i].regFonte1 + ")";
+            } else if (instrucoes[i].tipoInstrucao == TiposInstrucao::BNE) {
+                instrStr += instrucoes[i].regFonte1 + ", " +
+                            instrucoes[i].regFonte2 + ", " +
+                            to_string(instrucoes[i].offsetImediato);
+            } else {
+                instrStr += instrucoes[i].regDestino + ", " +
+                            instrucoes[i].regFonte1 + ", " +
+                            instrucoes[i].regFonte2;
+            }
+            cout << left << setw(24) << instrStr;
+
+            irPara(27, offset + y + 2);
+            cout << "|" << right << setw(7)
+                 << (instrucoes[i].status.emitido == -1 ? "" : to_string(instrucoes[i].status.emitido))
+                 << "|" << setw(7)
+                 << (instrucoes[i].status.inicioExecucao == -1 ? "" : to_string(instrucoes[i].status.inicioExecucao))
+                 << "|" << setw(7)
+                 << (instrucoes[i].status.fimExecucao == -1 ? "" : to_string(instrucoes[i].status.fimExecucao))
+                 << "|" << setw(9)
+                 << (instrucoes[i].status.escritaResultado == -1 ? "" : to_string(instrucoes[i].status.escritaResultado))
+                 << "|";
+
+            offset++;
+            irPara(27, offset + y + 2);
+            cout << "|||||";
+            offset++;
+        }
+
+        int yLS = 2;
+        irPara(70, yLS);
+        cout << "Load/Store Buffers: Ocupado Endereco Qbase Vbase Qval Vval Rest.";
+        yLS++;
+        irPara(72, yLS); cout << "";
+
+        for (int i = 0; i < numBuffersCarregamento; i++) {
+            yLS++;
+            irPara(70, yLS);
+            BufferLoad& lb = buffersCarregamento[i];
+            cout << right << setw(8) << lb.nome;
+            cout << " |" << setw(7) << (lb.ocupado ? "Sim" : "Nao");
+            string endStr = lb.ocupado && lb.origemBase.empty()
+                ? to_string(lb.baseVal) + "+" + to_string(lb.instrucao->offsetImediato)
+                : "";
+            cout << "|" << setw(9) << endStr;
+            cout << "|" << setw(6) << lb.origemBase;
+            cout << "|" << setw(6) << (lb.origemBase.empty() && lb.ocupado ? to_string(lb.baseVal) : "");
+            cout << "|" << setw(6) << "";
+            cout << "|" << setw(6) << (lb.resultReady ? to_string(lb.resultado) : "");
+            cout << "|" << setw(5) << (lb.ocupado ? to_string(max(lb.ciclosRestantes,0)) : "") << "|";
+            yLS++;
+            irPara(78, yLS); cout << "|||||||_|";
+        }
+        for (int i = 0; i < numBuffersArmazenamento; i++) {
+            yLS++;
+            irPara(70, yLS);
+            BufferStore& sb = buffersArmazenamento[i];
+            cout << right << setw(8) << sb.nome;
+            cout << " |" << setw(7) << (sb.ocupado ? "Sim" : "Nao");
+            string endStr = sb.ocupado && sb.origemBase.empty()
+                ? to_string(sb.baseVal) + "+" + to_string(sb.instrucao->offsetImediato)
+                : "";
+            cout << "|" << setw(9) << endStr;
+            cout << "|" << setw(6) << sb.origemBase;
+            cout << "|" << setw(6) << (sb.origemBase.empty() && sb.ocupado ? to_string(sb.baseVal) : "");
+            cout << "|" << setw(6) << sb.origemVal;
+            cout << "|" << setw(6) << (sb.origemVal.empty() && sb.ocupado ? to_string(sb.value) : "");
+            cout << "|" << setw(5) << (sb.ocupado ? to_string(max(sb.ciclosRestantes,0)) : "") << "|";
+            yLS++;
+            irPara(78, yLS); cout << "|||||||_|";
+        }
+
+        int yRegs = (offset + y + 2 > yLS ? offset + y + 2 : yLS) + 3;
+        irPara(90, yRegs); cout << "Registradores (Valores):";
+        irPara(90, ++yRegs); cout << " Nome  Valor";
+        irPara(90, ++yRegs); cout << "";
+
+        for (size_t i = 0; i < registradores.size(); ++i) {
+            yRegs++;
+            irPara(90, yRegs);
+            cout << "| " << left << setw(4) << registradores[i].nome
+                 << "| " << right << setw(5) << registradores[i].valor << "|";
+        }
+        if (!registradores.empty()) {
+            yRegs++;
+            irPara(90, yRegs); cout << "|||";
+        }
+
+        yRegs++;
+        irPara(90, ++yRegs); cout << "Memoria";
+        irPara(90, ++yRegs); cout << " End.  Valor";
+        irPara(90, ++yRegs); cout << "";
+        for (const auto& m : memoria) {
+            yRegs++;
+            irPara(90, yRegs);
+            cout << "| " << left << setw(4) << m.nome
+                 << "| " << right << setw(5) << m.valor << "|";
+        }
+        if (!memoria.empty()) {
+            yRegs++;
+            irPara(90, yRegs); cout << "||_|";
+        }
+
+        int yER = (yRegs > yLS ? yRegs : yLS) + 3;
+        irPara(4, yER); cout << "Estacoes de Reserva (ERs):";
+        yER++;
+        irPara(21, yER); cout << " Nome  Ocup  Op  Vj   Vk   Qj      Qk      Rest.";
+        yER++;
+        irPara(28, yER); cout << "_";
+
+        for (int i = 0; i < numEstacoesAddSub; i++) {
+            EstacaoReserva& er = estacoesAddSub[i];
+            yER++;
+            irPara(19, yER);
+            cout << right << setw(6) << er.nome
+                 << " |" << setw(4) << (er.ocupado ? "Sim" : "Nao")
+                 << "|" << setw(4) << er.tipoInstrucao
+                 << "|" << setw(4) << (er.origemJ.empty() && er.ocupado ? to_string(er.valorJ) : "")
+                 << "|" << setw(4) << (er.origemK.empty() && er.ocupado ? to_string(er.valorK) : "")
+                 << "|" << setw(7) << er.origemJ
+                 << "|" << setw(7) << er.origemK
+                 << "|" << setw(5) << (er.ocupado ? to_string(max(er.ciclosRestantes,0)) : "") << "|";
+            yER++;
+            irPara(25, yER); cout << "|||||||_|";
+        }
+        for (int i = 0; i < numEstacoesMultDiv; i++) {
+            EstacaoReserva& er = estacoesMultDiv[i];
+            yER++;
+            irPara(19, yER);
+            cout << right << setw(6) << er.nome
+                 << " |" << setw(4) << (er.ocupado ? "Sim" : "Nao")
+                 << "|" << setw(4) << er.tipoInstrucao
+                 << "|" << setw(4) << (er.origemJ.empty() && er.ocupado ? to_string(er.valorJ) : "")
+                 << "|" << setw(4) << (er.origemK.empty() && er.ocupado ? to_string(er.valorK) : "")
+                 << "|" << setw(7) << er.origemJ
+                 << "|" << setw(7) << er.origemK
+                 << "|" << setw(5) << (er.ocupado ? to_string(max(er.ciclosRestantes,0)) : "") << "|";
+            yER++;
+            irPara(25, yER); cout << "|||||||_|";
+        }
+
+        int yStatusReg = yER + 3;
+        irPara(20, yStatusReg); cout << "Estado dos Registradores (Unidade Escritora - Q.i):";
+        yStatusReg++;
+
+        int xPos = 20;
+        for (int i = 0; i < numTotalRegistradores; i++) {
+            irPara(xPos, yStatusReg);
+            cout << right << setw(5) << estadoRegistradores[i].nomeRegistrador;
+            irPara(xPos, yStatusReg + 1); cout << "";
+            irPara(xPos, yStatusReg + 2);
+            cout << "|" << setw(4) << estadoRegistradores[i].unidadeEscritora << "|";
+            irPara(xPos, yStatusReg + 3); cout << "||";
+            xPos += 8;
+        }
+
+        irPara(2, yStatusReg + 5);
+        cout << "\n\nEventos do Ciclo " << cicloAtual - 1 << " (Log): \n"
+             << logEventos;
+    }
+
     void Simular() {
         int proxIndiceInstrucao = 0;
         cicloAtual = 1;
@@ -753,7 +1146,7 @@ struct Tomasulo {
             cout << "Ciclo Atual: " << cicloAtual;
             mostrarEstado();
 
-            cout << "\n\n\n\n\n\nPressione ENTER para o proximo ciclo: ";
+            cout << "\n\n\n\nPressione ENTER para o proximo ciclo: ";
             cin.sync();
             cin.get();
 
@@ -763,13 +1156,12 @@ struct Tomasulo {
             escreverResultado_STOREs();
             executar();
 
-            // atualização do PC em caso de BNE resolvido
             if (branchResolved) {
-                if (branchTaken) {
+                if (branchTaken)
                     proxIndiceInstrucao = branchTarget;
-                } else {
+                else
                     proxIndiceInstrucao = branchIssuedIndex + 1;
-                }
+
                 branchPending = false;
                 branchResolved = false;
                 branchTaken = false;
@@ -777,10 +1169,10 @@ struct Tomasulo {
                 branchIssuedIndex = -1;
             }
 
-            int resultadoEmissao = -1;
+            int resIssue = -1;
             if (!branchPending && proxIndiceInstrucao < numInstrucoes)
-                resultadoEmissao = emitirInstrucao(proxIndiceInstrucao);
-            if (resultadoEmissao != -1 && resultadoEmissao != -2) proxIndiceInstrucao++;
+                resIssue = emitirInstrucao(proxIndiceInstrucao);
+            if (resIssue != -1 && resIssue != -2) proxIndiceInstrucao++;
 
             if (!haTrabalhoPendente(proxIndiceInstrucao)) {
                 system("cls");
@@ -796,193 +1188,36 @@ struct Tomasulo {
         }
     }
 
-    // impressão do estado (tabelas)
-    void mostrarEstado() {
-        int y = 2;
-        irPara(2, y); cout << "Instrucoes:";
-        irPara(27, y); cout << "Emitido" << " Comeco" << " Fim" << " Escrita";
-        irPara(27, y + 1); cout << "__________________________________";
-
-        int offset = 0;
-        for (int i = 0; i < numInstrucoes; i++) {
-            irPara(2, offset + y + 2);
-            string instrStr = to_string(i) + ". " + instrucoes[i].tipoInstrucao + " ";
-            if (instrucoes[i].tipoInstrucao == TiposInstrucao::CARREGA || instrucoes[i].tipoInstrucao == TiposInstrucao::ARMAZENA) {
-                instrStr += instrucoes[i].regFonte2 + ", " + to_string(instrucoes[i].offsetImediato) + "(" + instrucoes[i].regFonte1 + ")";
-            } else if (instrucoes[i].tipoInstrucao == TiposInstrucao::BNE) {
-                instrStr += instrucoes[i].regFonte1 + ", " + instrucoes[i].regFonte2 + ", " + to_string(instrucoes[i].offsetImediato);
-            } else {
-                instrStr += instrucoes[i].regDestino + ", " + instrucoes[i].regFonte1 + ", " + instrucoes[i].regFonte2;
-            }
-            cout << std::left << setw(24) << instrStr;
-
-            irPara(27, offset + y + 2);
-            cout << "|" << std::right << setw(7) << (instrucoes[i].status.emitido == -1 ? "" : to_string(instrucoes[i].status.emitido))
-                 << "|" << setw(7) << (instrucoes[i].status.inicioExecucao == -1 ? "" : to_string(instrucoes[i].status.inicioExecucao))
-                 << "|" << setw(7) << (instrucoes[i].status.fimExecucao == -1 ? "" : to_string(instrucoes[i].status.fimExecucao))
-                 << "|" << setw(9) << (instrucoes[i].status.escritaResultado == -1 ? "" : to_string(instrucoes[i].status.escritaResultado)) << "|";
-
-            offset++;
-            irPara(27, offset + y + 2);
-            cout << "|_______|_______|_______|_________|";
-            offset++;
-        }
-
-        int yLS = 2;
-        irPara(70, yLS);
-        cout << "Load/Store Buffers: Ocupado Endereco Qrs Vrs Qrt/d Vrt/d Rest.";
-        yLS++;
-        irPara(70 + 2, yLS); cout << "__________________________________________________________";
-
-        for (int i = 0; i < numBuffersCarregamento; i++) {
-            yLS++;
-            irPara(70, yLS);
-            BufferLS& buf = buffersCarregamento[i];
-            cout << std::right << setw(10) << buf.nome;
-            cout << " |" << setw(7) << (buf.ocupado ? "Sim" : "Nao") << "|" << setw(9) << buf.endereco << "|"
-                 << setw(4) << buf.origemRs << "|" << setw(4) << (buf.origemRs.empty() ? buf.valorRs : "") << "|"
-                 << setw(6) << buf.fu << "|" << setw(6) << (buf.hasForward ? buf.forwardValue : "") << "|"
-                 << setw(5) << (buf.instrucao != nullptr ? to_string(buf.instrucao->status.ciclosRestantesExecucao) : "") << "|";
-            yLS++;
-            irPara(70 + 11, yLS); cout << "|_______|_________|____|____|______|______|_____|";
-        }
-        for (int i = 0; i < numBuffersArmazenamento; i++) {
-            yLS++;
-            irPara(70, yLS);
-            BufferLS& buf = buffersArmazenamento[i];
-            string fuOutput = "";
-            string valueOutput = "";
-            if (!buf.fu.empty() && buf.fu[0] != 'R') { valueOutput = buf.fu; }
-            else if (!buf.fu.empty() && buf.fu[0] == 'R') { fuOutput = buf.fu; }
-
-            cout << std::right << setw(10) << buf.nome;
-            cout << " |" << setw(7) << (buf.ocupado ? "Sim" : "Nao") << "|" << setw(9) << buf.endereco << "|"
-                 << setw(4) << buf.origemRs << "|" << setw(4) << (buf.origemRs.empty() ? buf.valorRs : "") << "|"
-                 << setw(6) << fuOutput << "|" << setw(6) << valueOutput << "|"
-                 << setw(5) << (buf.instrucao != nullptr ? to_string(buf.instrucao->status.ciclosRestantesExecucao) : "") << "|";
-            yLS++;
-            irPara(70 + 11, yLS); cout << "|_______|_________|____|____|______|______|_____|";
-        }
-
-        int yRegs = (offset + y + 2 > yLS ? offset + y + 2 : yLS) + 3;
-        irPara(90, yRegs); cout << "Registradores (Valores e Memoria):";
-        irPara(90, ++yRegs); cout << " Nome" << "  Valor";
-        irPara(90, ++yRegs); cout << "____________";
-
-        size_t regCount = 0;
-        for (const auto& r : registradores) {
-            if (eNumero(r.nome) == 0) {
-                yRegs++;
-                irPara(90, yRegs);
-                cout << "| " << std::left << setw(4) << r.nome << "| " << std::right << setw(5) << r.valor << "|";
-                regCount++;
-            }
-        }
-        if (regCount > 0) { yRegs++; irPara(90, yRegs); cout << "|_____|_______|"; }
-
-        yRegs++;
-        irPara(90, ++yRegs); cout << "Memoria";
-        irPara(90, ++yRegs); cout << " End." << "  Valor";
-        irPara(90, ++yRegs); cout << "____________";
-        for (const auto& m : memoria) {
-            yRegs++;
-            irPara(90, yRegs);
-            cout << "| " << std::left << setw(4) << m.nome << "| " << std::right << setw(5) << m.valor << "|";
-        }
-        if (memoria.size() > 0) { yRegs++; irPara(90, yRegs); cout << "|____|_______|"; }
-
-        int yER = (yRegs > yLS ? yRegs : yLS) + 3;
-        irPara(4, yER); cout << "Estacoes de Reserva (ERs):";
-        yER++;
-        irPara(21, yER); cout << " Nome  Ocupado  Op  ValorJ  ValorK  OrigemJ  OrigemK  Rest.";
-        yER++;
-        irPara(21 + 7, yER); cout << "_________________________________________________________";
-
-        for (int i = 0; i < numEstacoesAddSub; i++) {
-            EstacaoReserva& er = estacoesAddSub[i];
-            yER++;
-            irPara(19, yER);
-            cout << std::right << setw(7) << er.nome << " |" << setw(7) << (er.ocupado ? "Sim" : "Nao") << "|" << setw(4) << er.tipoInstrucao << "|"
-                 << setw(7) << (er.origemJ.empty() ? er.valorJ : "") << "|" << setw(7) << (er.origemK.empty() ? er.valorK : "") << "|" << setw(8) << er.origemJ << "|" << setw(8) << er.origemK << "|"
-                 << setw(5) << (er.instrucao != nullptr ? to_string(er.instrucao->status.ciclosRestantesExecucao) : "") << "|";
-            yER++;
-            irPara(19 + 7 + 1, yER); cout << "|_______|____|_______|_______|________|________|_____|";
-        }
-        for (int i = 0; i < numEstacoesMultDiv; i++) {
-            EstacaoReserva& er = estacoesMultDiv[i];
-            yER++;
-            irPara(19, yER);
-            cout << std::right << setw(7) << er.nome << " |" << setw(7) << (er.ocupado ? "Sim" : "Nao") << "|" << setw(4) << er.tipoInstrucao << "|"
-                 << setw(7) << (er.origemJ.empty() ? er.valorJ : "") << "|" << setw(7) << (er.origemK.empty() ? er.valorK : "") << "|" << setw(8) << er.origemJ << "|" << setw(8) << er.origemK << "|"
-                 << setw(5) << (er.instrucao != nullptr ? to_string(er.instrucao->status.ciclosRestantesExecucao) : "") << "|";
-            yER++;
-            irPara(19 + 7 + 1, yER); cout << "|_______|____|_______|_______|________|________|_____|";
-        }
-
-        int yStatusReg = yER + 3;
-        irPara(20, yStatusReg); cout << "Estado dos Registradores (Unidade Escritora - Q.i):";
-        yStatusReg++;
-
-        int xPos = 20;
-        for (int i = 0; i < numTotalRegistradores; i++) {
-            irPara(xPos, yStatusReg); cout << std::right << setw(5) << estadoRegistradores[i].nomeRegistrador;
-            irPara(xPos, yStatusReg + 1); cout << "______";
-            irPara(xPos, yStatusReg + 2); cout << "|" << setw(4) << estadoRegistradores[i].unidadeEscritora << "|";
-            irPara(xPos, yStatusReg + 3); cout << "|______|";
-            xPos += 8;
-        }
-
-        irPara(2, yStatusReg + 5);
-        cout << "\n\nEventos do Ciclo " << cicloAtual - 1 << " (Log): \n" << logEventos;
-    }
-
     Tomasulo() {}
+    ~Tomasulo() {
+        delete[] buffersCarregamento;
+        delete[] buffersArmazenamento;
+        delete[] estacoesAddSub;
+        delete[] estacoesMultDiv;
+        delete[] estadoRegistradores;
+        delete[] instrucoes;
+    }
 };
 
-int main(int /*argc*/, char* /*argv*/[]) {
-    // Ajuste de fonte opcional e seguro (ignorado se a API não existir)
-#if defined(_WIN32)
-    // Definição local com o mesmo layout, para evitar depender de CONSOLE_FONT_INFOEX
-    struct CONSOLE_FONT_INFOEX_LOCAL {
-        ULONG cbSize;
-        DWORD nFont;
-        COORD dwFontSize;
-        UINT  FontFamily;
-        UINT  FontWeight;
-        WCHAR FaceName[LF_FACESIZE];
-    } info{};
-
-    info.cbSize = sizeof(info);
-    info.nFont = 0;
-    info.dwFontSize.X = 0;
-    info.dwFontSize.Y = 18;
-    info.FontFamily = FF_DONTCARE;
-    info.FontWeight = FW_NORMAL;
-    wcscpy(info.FaceName, L"Consolas");
-
-    using SetFontExFn = BOOL (WINAPI*)(HANDLE, BOOL, void*);
-    HMODULE k32 = GetModuleHandleA("kernel32.dll");
-    SetFontExFn pSetCurrentConsoleFontEx =
-        k32 ? reinterpret_cast<SetFontExFn>(GetProcAddress(k32, "SetCurrentConsoleFontEx")) : nullptr;
-
-    if (pSetCurrentConsoleFontEx) {
-        pSetCurrentConsoleFontEx(GetStdHandle(STD_OUTPUT_HANDLE), FALSE, &info);
-    }
-#endif
-
-    // cor de fundo/primeiro plano
+int main() {
 #if defined(_WIN32)
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY | BACKGROUND_BLUE);
+    SetConsoleTextAttribute(
+        hConsole,
+        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY
+    );
     system("cls");
 #endif
 
     Tomasulo simulador;
-    simulador.carregarDadosDoArquivo("./source.txt");
+    simulador.carregarDadosDoArquivo("source.txt");
+
+    registradores[4].valor = 3;
+    registradores[5].valor = 1;
+
     simulador.Simular();
     return 0;
 }
-
 
 // posiciona cursor no console
 void irPara(short x, short y) {
