@@ -316,7 +316,53 @@ struct Tomasulo {
         while (leitura.peek() != EOF && leitura.peek() == '#')
             getline(leitura, linhaDados);
 
-        leitura >> numInstrucoes;
+        string token;
+        if (!(leitura >> token)) {
+            cout << "Erro ao ler arquivo apos declaracao de registradores.\n";
+            exit(EXIT_FAILURE);
+        }
+
+        if (!token.empty() && (token[0] == 'F' || token[0] == 'f')) {
+            while (true) {
+                string regName = token;
+                int val;
+                if (!(leitura >> val)) {
+                    cout << "Erro ao ler valor inicial de " << regName << ".\n";
+                    exit(EXIT_FAILURE);
+                }
+
+                int idx = regIndex(regName);
+                if (idx >= 0 && idx < numTotalRegistradores) {
+                    registradores[idx].valor = val;
+                } else {
+                    cout << "Registrador invalido na inicializacao: " << regName << endl;
+                    exit(EXIT_FAILURE);
+                }
+
+                if (!(leitura >> token)) {
+                    cout << "Fim inesperado ao procurar numero de instrucoes.\n";
+                    exit(EXIT_FAILURE);
+                }
+
+                if (!(token[0] == 'F' || token[0] == 'f')) {
+                    try {
+                        numInstrucoes = stoi(token);
+                    } catch (...) {
+                        cout << "Token inesperado onde se esperava numero de instrucoes: " << token << endl;
+                        exit(EXIT_FAILURE);
+                    }
+                    break;
+                }
+            }
+        } else {
+            try {
+                numInstrucoes = stoi(token);
+            } catch (...) {
+                cout << "Token inesperado onde se esperava numero de instrucoes: " << token << endl;
+                exit(EXIT_FAILURE);
+            }
+        }
+
         instrucoes = new Instrucao[numInstrucoes];
 
         for (int i = 0; i < numInstrucoes; i++) {
@@ -375,7 +421,6 @@ struct Tomasulo {
     }
 
     void transmitirResultado(int valor, const string& nomeUnidade) {
-        // LOAD buffers
         for (int i = 0; i < numBuffersCarregamento; i++) {
             BufferLoad& lb = buffersCarregamento[i];
             if (!lb.ocupado) continue;
@@ -384,7 +429,6 @@ struct Tomasulo {
                 lb.baseVal = valor;
             }
         }
-        // STORE buffers
         for (int i = 0; i < numBuffersArmazenamento; i++) {
             BufferStore& sb = buffersArmazenamento[i];
             if (!sb.ocupado) continue;
@@ -397,7 +441,6 @@ struct Tomasulo {
                 sb.value = valor;
             }
         }
-        // Estações ADD/SUB/BNE
         for (int i = 0; i < numEstacoesAddSub; i++) {
             EstacaoReserva& er = estacoesAddSub[i];
             if (!er.ocupado) continue;
@@ -410,7 +453,6 @@ struct Tomasulo {
                 er.valorK = valor;
             }
         }
-        // Estações MUL/DIV
         for (int i = 0; i < numEstacoesMultDiv; i++) {
             EstacaoReserva& er = estacoesMultDiv[i];
             if (!er.ocupado) continue;
@@ -429,7 +471,7 @@ struct Tomasulo {
         loadBuf.hasForward = false;
         loadBuf.forwardVal = 0;
 
-        if (!loadBuf.origemBase.empty()) return true; // base ainda pendente
+        if (!loadBuf.origemBase.empty()) return true;
 
         int loadAddr = loadBuf.baseVal + loadBuf.instrucao->offsetImediato;
 
@@ -443,10 +485,9 @@ struct Tomasulo {
 
             int emitSt = st.instrucao->status.emitido;
             int emitLd = loadBuf.instrucao->status.emitido;
-            if (emitSt == -1 || emitSt > emitLd) continue; // apenas stores mais antigos
+            if (emitSt == -1 || emitSt > emitLd) continue;
 
             if (!st.origemBase.empty()) {
-                // endereço do STORE não resolvido
                 existeStoreAntigoMesmoEndNaoPronto = true;
                 continue;
             }
@@ -454,13 +495,11 @@ struct Tomasulo {
             int stAddr = st.baseVal + st.instrucao->offsetImediato;
             if (stAddr == loadAddr) {
                 if (st.origemVal.empty()) {
-                    // valor pronto
                     if (emitSt > melhorEmit) {
                         melhorEmit = emitSt;
                         melhorVal = st.value;
                     }
                 } else {
-                    // valor ainda não pronto
                     existeStoreAntigoMesmoEndNaoPronto = true;
                 }
             }
@@ -657,7 +696,6 @@ struct Tomasulo {
     }
 
     void executar() {
-        // LOADs
         for (int i = 0; i < numBuffersCarregamento; i++) {
             BufferLoad& lb = buffersCarregamento[i];
             if (!lb.ocupado || !lb.instrucao) continue;
@@ -689,7 +727,6 @@ struct Tomasulo {
             }
         }
 
-        // STOREs
         for (int i = 0; i < numBuffersArmazenamento; i++) {
             BufferStore& sb = buffersArmazenamento[i];
             if (!sb.ocupado || !sb.instrucao) continue;
@@ -714,7 +751,6 @@ struct Tomasulo {
             }
         }
 
-        // ADD/SUB/BNE
         for (int i = 0; i < numEstacoesAddSub; i++) {
             EstacaoReserva& er = estacoesAddSub[i];
             if (!er.ocupado || !er.instrucao) continue;
@@ -738,7 +774,6 @@ struct Tomasulo {
             }
         }
 
-        // MUL/DIV
         for (int i = 0; i < numEstacoesMultDiv; i++) {
             EstacaoReserva& er = estacoesMultDiv[i];
             if (!er.ocupado || !er.instrucao) continue;
@@ -769,7 +804,6 @@ struct Tomasulo {
             int cls = (cdb_rr + turn) % 3;
 
             if (cls == 0) {
-                // ADD/SUB/BNE
                 for (int i = 0; i < numEstacoesAddSub; i++) {
                     EstacaoReserva& er = estacoesAddSub[i];
                     if (!er.ocupado || !er.instrucao) continue;
@@ -835,7 +869,6 @@ struct Tomasulo {
                     }
                 }
             } else if (cls == 1) {
-                // MUL/DIV
                 for (int i = 0; i < numEstacoesMultDiv; i++) {
                     EstacaoReserva& er = estacoesMultDiv[i];
                     if (!er.ocupado || !er.instrucao) continue;
@@ -873,7 +906,6 @@ struct Tomasulo {
                     break;
                 }
             } else {
-                // LOAD
                 for (int i = 0; i < numBuffersCarregamento; i++) {
                     BufferLoad& lb = buffersCarregamento[i];
                     if (!lb.ocupado || !lb.instrucao) continue;
@@ -966,7 +998,7 @@ struct Tomasulo {
         int y = 2;
         irPara(2, y); cout << "Instrucoes:";
         irPara(27, y); cout << "Emitido" << " Comeco" << " Fim" << " Escrita";
-        irPara(27, y + 1); cout << "";
+        irPara(27, y + 1); cout << "__________________________________";
 
         int offset = 0;
         for (int i = 0; i < numInstrucoes; i++) {
@@ -1001,7 +1033,7 @@ struct Tomasulo {
 
             offset++;
             irPara(27, offset + y + 2);
-            cout << "|||||";
+            cout << "|_______|_______|_______|_________|";
             offset++;
         }
 
@@ -1009,7 +1041,7 @@ struct Tomasulo {
         irPara(70, yLS);
         cout << "Load/Store Buffers: Ocupado Endereco Qbase Vbase Qval Vval Rest.";
         yLS++;
-        irPara(72, yLS); cout << "";
+        irPara(72, yLS); cout << "__________________________________________________________";
 
         for (int i = 0; i < numBuffersCarregamento; i++) {
             yLS++;
@@ -1027,7 +1059,7 @@ struct Tomasulo {
             cout << "|" << setw(6) << (lb.resultReady ? to_string(lb.resultado) : "");
             cout << "|" << setw(5) << (lb.ocupado ? to_string(max(lb.ciclosRestantes,0)) : "") << "|";
             yLS++;
-            irPara(78, yLS); cout << "|||||||_|";
+            irPara(78, yLS); cout << "|_______|_________|______|______|______|______|_____|";
         }
         for (int i = 0; i < numBuffersArmazenamento; i++) {
             yLS++;
@@ -1045,13 +1077,13 @@ struct Tomasulo {
             cout << "|" << setw(6) << (sb.origemVal.empty() && sb.ocupado ? to_string(sb.value) : "");
             cout << "|" << setw(5) << (sb.ocupado ? to_string(max(sb.ciclosRestantes,0)) : "") << "|";
             yLS++;
-            irPara(78, yLS); cout << "|||||||_|";
+            irPara(78, yLS); cout << "|_______|_________|______|______|______|______|_____|";
         }
 
         int yRegs = (offset + y + 2 > yLS ? offset + y + 2 : yLS) + 3;
         irPara(90, yRegs); cout << "Registradores (Valores):";
         irPara(90, ++yRegs); cout << " Nome  Valor";
-        irPara(90, ++yRegs); cout << "";
+        irPara(90, ++yRegs); cout << "____________";
 
         for (size_t i = 0; i < registradores.size(); ++i) {
             yRegs++;
@@ -1061,13 +1093,13 @@ struct Tomasulo {
         }
         if (!registradores.empty()) {
             yRegs++;
-            irPara(90, yRegs); cout << "|||";
+            irPara(90, yRegs); cout << "|_____|_______|";
         }
 
         yRegs++;
         irPara(90, ++yRegs); cout << "Memoria";
         irPara(90, ++yRegs); cout << " End.  Valor";
-        irPara(90, ++yRegs); cout << "";
+        irPara(90, ++yRegs); cout << "____________";
         for (const auto& m : memoria) {
             yRegs++;
             irPara(90, yRegs);
@@ -1076,7 +1108,7 @@ struct Tomasulo {
         }
         if (!memoria.empty()) {
             yRegs++;
-            irPara(90, yRegs); cout << "||_|";
+            irPara(90, yRegs); cout << "|____|_______|";
         }
 
         int yER = (yRegs > yLS ? yRegs : yLS) + 3;
@@ -1084,7 +1116,7 @@ struct Tomasulo {
         yER++;
         irPara(21, yER); cout << " Nome  Ocup  Op  Vj   Vk   Qj      Qk      Rest.";
         yER++;
-        irPara(28, yER); cout << "_";
+        irPara(28, yER); cout << "_________________________________________________";
 
         for (int i = 0; i < numEstacoesAddSub; i++) {
             EstacaoReserva& er = estacoesAddSub[i];
@@ -1099,7 +1131,7 @@ struct Tomasulo {
                  << "|" << setw(7) << er.origemK
                  << "|" << setw(5) << (er.ocupado ? to_string(max(er.ciclosRestantes,0)) : "") << "|";
             yER++;
-            irPara(25, yER); cout << "|||||||_|";
+            irPara(25, yER); cout << "|____|____|____|____|_______|_______|_____|";
         }
         for (int i = 0; i < numEstacoesMultDiv; i++) {
             EstacaoReserva& er = estacoesMultDiv[i];
@@ -1114,7 +1146,7 @@ struct Tomasulo {
                  << "|" << setw(7) << er.origemK
                  << "|" << setw(5) << (er.ocupado ? to_string(max(er.ciclosRestantes,0)) : "") << "|";
             yER++;
-            irPara(25, yER); cout << "|||||||_|";
+            irPara(25, yER); cout << "|____|____|____|____|_______|_______|_____|";
         }
 
         int yStatusReg = yER + 3;
@@ -1125,10 +1157,10 @@ struct Tomasulo {
         for (int i = 0; i < numTotalRegistradores; i++) {
             irPara(xPos, yStatusReg);
             cout << right << setw(5) << estadoRegistradores[i].nomeRegistrador;
-            irPara(xPos, yStatusReg + 1); cout << "";
+            irPara(xPos, yStatusReg + 1); cout << "______";
             irPara(xPos, yStatusReg + 2);
             cout << "|" << setw(4) << estadoRegistradores[i].unidadeEscritora << "|";
-            irPara(xPos, yStatusReg + 3); cout << "||";
+            irPara(xPos, yStatusReg + 3); cout << "|______|";
             xPos += 8;
         }
 
@@ -1211,10 +1243,6 @@ int main() {
 
     Tomasulo simulador;
     simulador.carregarDadosDoArquivo("source.txt");
-
-    registradores[4].valor = 3;
-    registradores[5].valor = 1;
-
     simulador.Simular();
     return 0;
 }
