@@ -1,20 +1,47 @@
-Add_Sub_Reservation_Stations 3
-Mul_Div_Reservation_Stations 2
+# =====================================================================
+# Exemplo - Tomasulo Superescalar de Alto Paralelismo
+# =====================================================================
+# Configuracoes da microarquitetura
+Add_Sub_Reservation_Stations 4
+Mul_Div_Reservation_Stations 3
 Load_Buffers 3
-Store_Buffers 1
-
+Store_Buffers 3
 Add_Sub_Cycles 2
-Mul_Cycles 10
+Mul_Cycles 4
 Load_Store_Cycles 2
-Div_Cycles 40
-
-Registers 11
-
-7
-ADD F2 F4 F5
-STORE F2 45 F5
-MUL F0 F2 F4
-SUB F8 F6 F2
-DIV F10 F0 F6
-ADD F6 F8 F2
-ADD F8 F6 F2
+Div_Cycles 8
+Branch_Cycles 1
+Issue_Width 3
+CDB_Width 3
+Commit_Width 3
+ROB_Entries 16
+Add_Sub_Functional_Units 3
+Mul_Div_Functional_Units 2
+Load_Store_Functional_Units 2
+Branch_Functional_Units 1
+Branch_Mode Stall
+# Quantidade de registradores visiveis
+Registers 12
+# Inicializacao dos registradores
+F2 10
+F3 5
+F4 3
+F5 0
+F6 2
+F8 4
+# Inicializacao de memoria (endereco valor)
+Memory 0  42
+Memory 4  17
+Memory 8  99
+# Numero de instrucoes
+10
+LOAD F1 0 F5
+ADD F2 F6 F8
+MUL F3 F4 F4
+ADD F7 F1 F2
+STORE F3 8 F5
+SUB F9 F7 F3
+DIV F10 F1 F2
+BNE F2 F4 1
+ADD F11 F11 F11
+ADD F0 F9 F10

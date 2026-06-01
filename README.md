@@ -1,246 +1,343 @@
-# TomasuloSimulator
+# Simulador Superescalar do Algoritmo de Tomasulo com ROB
 
-## Grupo
-- André Scianni Pereira
-- Davi Caetano Tavares Ramos
-- João Pedro Nascimento Fernandes 
+**Disciplina:** Arquitetura de Computadores III  
+**Linguagem:** C++17  
+**Referência:** Hennessy & Patterson — _Arquitetura de Computadores: Uma Abordagem Quantitativa_  
+**Grupo:** André Scianni, Davi Caetano, Enzo Moraes e Lucas Pereira
+
+---
+
+## Visão Geral
+
+Este projeto implementa um simulador do algoritmo de Tomasulo com suporte a execução superescalar e reordenação de instruções por meio de um **Reorder Buffer (ROB)**.
+
+### Principais funcionalidades
+
+- Emissão (_issue_) de múltiplas instruções por ciclo
+- Execução fora de ordem (_out-of-order execution_)
+- Estações de reserva distribuídas por tipo de unidade funcional
+- Reordenação de instruções utilizando ROB
+- Renomeação implícita de registradores por meio de tags do ROB
+- Barramento comum de dados (_Common Data Bus – CDB_) configurável
+- Múltiplas unidades funcionais independentes
+- Suporte a desvios condicionais com:
+    - **Stall**
+    - **Predict Not Taken**
+- Tratamento de dependências de memória entre LOAD e STORE
+- _Store forwarding_
+
+---
+
+## Compilação
+
+```
+g++ -std=c++17 -O2 -o tomasulo tomasulo.cpp
+```
+
+---
+
 ## Execução
 
-Os arquivos `source.txt` e `source.exe` devem estar no mesmo diretório.
+```
+./tomasulo <arquivo_entrada> [--auto] [--max N]
+```
 
-1- Abrir um terminal PowerShell  
-2- Executar o comando: `./source`
+### Argumentos
 
-Para avançar os ciclos do programa, pressione `Enter` a cada ciclo.
+|Argumento|Descrição|
+|---|---|
+|`arquivo_entrada`|Arquivo de entrada contendo configuração e instruções|
+|`--auto`|Executa todos os ciclos automaticamente|
+|`--max N`|Limita a execução a N ciclos|
 
----
+### Exemplos
 
-## Structs
+```
+./tomasulo source.txt
+```
 
-### Gerais
+Execução passo a passo.
 
-#### struct Registrador
+```
+./tomasulo source.txt --auto
+```
 
-Define um registrador com um nome e um valor numérico.  
-É usado tanto para o banco de registradores (`vector<Registrador> registradores`) quanto para representar posições de memória (`vector<Registrador> memoria`).  
-O operador `==` é sobrecarregado para comparar dois registradores pelo nome, permitindo buscas e atualizações simplificadas.
+Execução automática até o término.
 
----
+```
+./tomasulo source.txt --auto --max 50
+```
 
-#### struct StatusInstrucao
-
-Mantém o estado de cada instrução ao longo da simulação, incluindo:
-
-- `emitido`: ciclo em que foi emitida (issue)
-    
-- `inicioExecucao`: ciclo em que começou a execução
-    
-- `fimExecucao`: ciclo em que terminou a execução
-    
-- `escritaResultado`: ciclo em que realizou o _write-back_
-    
-- `ciclosRestantesExecucao`: contador de ciclos restantes até o término da execução
-    
-
-Essa estrutura é essencial para acompanhar o progresso e calcular as dependências entre instruções.
+Execução automática limitada a 50 ciclos.
 
 ---
 
-#### struct TiposInstrucao
+## Formato do Arquivo de Entrada
 
-Contém constantes de texto representando os tipos de instruções aceitas pelo simulador:  
-`ADD`, `SUB`, `MUL`, `DIV`, `LOAD`, `STORE`, e `BNE`.  
-Essas strings são utilizadas para identificar e direcionar o tratamento correto de cada instrução dentro do algoritmo de Tomasulo.
+Comentários são iniciados com `#`.
 
----
+### 1. Configuração da Arquitetura
 
-#### struct TipoEstacaoReserva e struct TipoBufferLS
+```
+Add_Sub_Reservation_Stations 3
+Mul_Div_Reservation_Stations 2
+Load_Buffers 2
+Store_Buffers 2
 
-Definem rótulos para as diferentes unidades funcionais usadas na simulação:
+Add_Sub_Cycles 2
+Mul_Cycles 4
+Div_Cycles 8
+Load_Store_Cycles 2
+Branch_Cycles 1
 
-- **TipoEstacaoReserva**: define categorias de estações de reserva, como `ADD/SUB` e `MUL/DIV`.
-    
-- **TipoBufferLS**: define categorias de buffers de memória, `LOAD` e `STORE`.
-    
+Issue_Width 2
+CDB_Width 2
+Commit_Width 2
 
-Esses tipos ajudam a organizar e diferenciar as unidades funcionais de acordo com a operação que executam.
+ROB_Entries 16
 
----
+Add_Sub_Functional_Units 2
+Mul_Div_Functional_Units 1
+Load_Store_Functional_Units 1
+Branch_Functional_Units 1
 
-#### struct Instrucao
+Branch_Mode Stall
+```
 
-Representa uma instrução completa do programa de entrada.  
-Contém:
+### 2. Quantidade de Registradores
 
-- `tipoInstrucao`: tipo da operação (ADD, MUL, LOAD etc.)
-    
-- `regDestino`: registrador de destino
-    
-- `regFonte1` e `regFonte2`: registradores de origem ou base
-    
-- `offsetImediato`: deslocamento usado por instruções de memória e branch
-    
-- `status`: instância de `StatusInstrucao`
-    
+```
+Registers 16
+```
 
-Cada objeto dessa struct descreve uma linha do arquivo `source.txt`.
+### 3. Inicialização de Registradores e Memória
 
----
+```
+F0 10
+F1 20
 
-#### struct EstadoRegistrador
+Memory 100 5
+M104 12
+```
 
-Mantém o status de cada registrador físico.  
-O campo `unidadeEscritora` indica qual unidade funcional (estação de reserva ou buffer) produzirá o valor do registrador, implementando o controle de dependências **RAW** (Read After Write).  
-É equivalente ao campo Q.i no algoritmo de Tomasulo clássico.
+### 4. Quantidade de Instruções
 
----
+```
+10
+```
 
-#### struct EstacaoReserva
+### 5. Programa
 
-Modela uma estação de reserva associada a operações de ponto flutuante ou inteiras (ADD, SUB, MUL, DIV, BNE).  
-Campos principais:
-
-- `ocupado`: indica se a estação está em uso
-    
-- `tipoInstrucao`: operação sendo executada
-    
-- `valorJ`, `valorK`: valores dos operandos (Vj e Vk)
-    
-- `origemJ`, `origemK`: dependências (Qj e Qk), indicando de onde virão os operandos
-    
-- `instrucao`: ponteiro para a instrução associada
-    
-
-Essa estrutura permite execução fora de ordem e resolução dinâmica de dependências de dados.
+```
+LOAD F1 0 F0
+ADD F2 F1 F3
+MUL F4 F2 F5
+STORE F4 4 F0
+```
 
 ---
 
-#### struct BufferLS
+## Parâmetros Configuráveis
 
-Modela os buffers de LOAD e STORE usados para acesso à memória.  
-Campos principais:
-
-- `ocupado`: indica se está em uso
-    
-- `endereco`: endereço calculado (texto para exibição)
-    
-- `origemRs`, `valorRs`: dependência e valor do registrador base (Rs)
-    
-- `fu`: valor ou dependência do dado a ser armazenado (em STORE)
-    
-- `hasForward` e `forwardValue`: usados para implementar _store-to-load forwarding_, permitindo que LOADs obtenham valores diretamente de STOREs anteriores.
-    
-- `instrucao`: ponteiro para a instrução associada
-    
-
-Esses buffers garantem a manutenção da ordem de acesso à memória e tratam _hazards_ entre LOAD e STORE.
-
----
-
-### Struct Tomasulo
-
-#### Método emitirInstrucao
-
-Responsável por emitir instruções da fila de entrada.  
-Seleciona o tipo de unidade funcional apropriada (ER ou Buffer) e inicializa suas estruturas com os operandos e dependências.  
-Verifica **hazards estruturais** (falta de unidade livre) e **hazards de dados** (dependências via Q.i).  
-Instruções `BNE` usam uma estação de ADD/SUB para executar a comparação e travam a emissão de instruções subsequentes até o branch ser resolvido.
+|   |   |
+|---|---|
+|Parâmetro|Descrição|
+|`Add_Sub_Reservation_Stations`|Número de estações para ADD e SUB|
+|`Mul_Div_Reservation_Stations`|Número de estações para MUL e DIV|
+|`Load_Buffers`|Quantidade de buffers de LOAD|
+|`Store_Buffers`|Quantidade de buffers de STORE|
+|`Add_Sub_Cycles`|Latência de ADD e SUB|
+|`Mul_Cycles`|Latência de MUL|
+|`Div_Cycles`|Latência de DIV|
+|`Load_Store_Cycles`|Latência de LOAD e STORE|
+|`Branch_Cycles`|Latência de desvios|
+|`Issue_Width`|Instruções emitidas por ciclo|
+|`CDB_Width`|Resultados escritos no CDB por ciclo|
+|`Commit_Width`|Commits realizados por ciclo|
+|`ROB_Entries`|Número de entradas do ROB|
+|`Add_Sub_Functional_Units`|UFs para ADD e SUB|
+|`Mul_Div_Functional_Units`|UFs para MUL e DIV|
+|`Load_Store_Functional_Units`|UFs para LOAD e STORE|
+|`Branch_Functional_Units`|UFs para desvios|
+|`Branch_Mode`|`Stall` ou `Predict_Not_Taken`|
 
 ---
 
-#### Método executar
+## Conjunto de Instruções
 
-Simula a execução das instruções em cada unidade funcional.  
-Avança o contador de ciclos de execução para as instruções ativas e controla o início da execução assim que os operandos ficam prontos.  
-Inclui as seguintes lógicas:
+|   |   |   |
+|---|---|---|
+|Instrução|Sintaxe|Operação|
+|ADD|`ADD Fd Fs Ft`|`Fd = Fs + Ft`|
+|SUB|`SUB Fd Fs Ft`|`Fd = Fs - Ft`|
+|MUL|`MUL Fd Fs Ft`|`Fd = Fs * Ft`|
+|DIV|`DIV Fd Fs Ft`|`Fd = Fs / Ft`|
+|LOAD|`LOAD Fd offset Fbase`|`Fd = Mem[Fbase + offset]`|
+|STORE|`STORE Fs offset Fbase`|`Mem[Fbase + offset] = Fs`|
+|BEQ|`BEQ Fs Ft offset`|Desvia se `Fs == Ft`|
+|BNE|`BNE Fs Ft offset`|Desvia se `Fs != Ft`|
 
-- **LOAD**: espera a disponibilidade do registrador base e ausência de _hazards_ com STOREs anteriores; ativa _forwarding_ se o valor estiver pronto.
-    
-- **STORE**: só inicia quando endereço e valor estão disponíveis.
-    
-- **ADD/SUB/MUL/DIV**: executam conforme o número de ciclos configurado para cada tipo.
-    
-- **BNE**: executa em um único ciclo, apenas para comparação e resolução de desvio.
-    
+Os registradores podem ser especificados como:
 
----
-
-#### Método escreverResultado_CDB_unico
-
-Gerencia o _write-back_ pelo barramento de dados comum (CDB), garantindo apenas uma escrita por ciclo.  
-Adota uma política de prioridade rotativa:
-
-1. ADD/SUB/BNE
-    
-2. MUL/DIV
-    
-3. LOAD
-    
-
-O método atualiza registradores, limpa estações de reserva e propaga resultados às unidades dependentes via broadcast.  
-Instruções `BNE` são resolvidas nesse estágio, sem ocupar o CDB, e determinam se o desvio foi tomado ou não.
+```
+F0
+R0
+$R0
+```
 
 ---
 
-#### Método escreverResultado_STOREs
+## Organização do Ciclo
 
-Executa o _commit_ das instruções `STORE`, gravando diretamente na memória simulada.  
-Essa operação é independente do CDB, permitindo que o armazenamento ocorra paralelamente a outras operações de escrita de resultado.
+Em cada ciclo, o simulador executa as seguintes etapas:
 
----
+```
+1. escreverCDB()
+2. executar()
+3. commitROB()
+4. emitirSuperescalar()
+```
 
-#### Método transmitirResultado
+### Justificativa
 
-Executa o _broadcast_ dos resultados pelo barramento CDB.  
-Atualiza os campos `Vj`, `Vk`, `Vrs`, `fu` de todas as estruturas dependentes que aguardavam aquele resultado, removendo as dependências (`Qj`, `Qk`, `Qrs`).
+A escrita no CDB ocorre antes das demais etapas para que resultados produzidos no ciclo anterior estejam disponíveis para novas instruções no ciclo corrente.
 
----
-
-#### Método haTrabalhoPendente
-
-Verifica se ainda existem instruções para emitir, executar ou escrever resultado.  
-Retorna falso somente quando todas as unidades funcionais estão livres e todos os resultados foram escritos, marcando o fim da simulação.
+Uma instrução emitida no ciclo N não pode iniciar execução no mesmo ciclo.
 
 ---
 
-#### Método Simular
+## Renomeação de Registradores
 
-Controla o ciclo principal de simulação.  
-A cada iteração, executa na ordem:
+O simulador utiliza uma **Register Alias Table (RAT)** associada ao ROB.
 
-1. **Write-Back** (CDB único + commits de STORE)
-    
-2. **Execução**
-    
-3. **Emissão**
-    
+Quando uma instrução produz um registrador de destino:
 
-Também verifica a resolução de `BNE`, ajustando o contador de instruções e liberando o bloqueio de emissão.  
-O estado do sistema é impresso a cada ciclo, e a simulação termina quando não há mais trabalho pendente.
+```
+RAT[Fd] = ROBx
+```
 
----
+As instruções consumidoras passam a depender da tag do ROB em vez do valor arquitetural.
 
-#### Método mostrarEstado
+Esse mecanismo elimina:
 
-Exibe todas as tabelas da simulação:
+- Dependências WAR (_Write After Read_)
+- Dependências WAW (_Write After Write_)
 
-- Lista de instruções com ciclos de emissão, execução e escrita
-    
-- Buffers de `LOAD` e `STORE`
-    
-- Estações de reserva
-    
-- Banco de registradores e conteúdo da memória
-    
-- Log detalhado dos eventos do ciclo anterior
-    
-
-Serve para acompanhar visualmente o comportamento do algoritmo e depurar o estado interno do simulador.
+O valor arquitetural é atualizado apenas durante o commit.
 
 ---
 
-## Main
+## Tratamento de Branches
 
-A função `main()` realiza a configuração inicial do console (fonte, cor e tamanho), carrega o arquivo de entrada `source.txt`, inicializa o simulador e executa a função `Simular()`.  
-Durante a execução, o usuário avança os ciclos pressionando `Enter`.  
-Ao final, o estado completo do sistema é exibido, incluindo o número total de ciclos até a conclusão.
+### Stall
+
+Ao emitir um branch, novas instruções deixam de ser emitidas até sua resolução.
+
+Características:
+
+- Sem especulação
+- Implementação simples
+- Menor paralelismo
+
+### Predict Not Taken
+
+O simulador assume que o branch não será tomado.
+
+Se a predição estiver incorreta:
+
+- As instruções especulativas são descartadas
+- O ROB é restaurado
+- A RAT retorna ao estado salvo
+- O PC é corrigido
+
+---
+
+## Dependências de Memória
+
+Antes da execução de um LOAD:
+
+1. O ROB é percorrido procurando STOREs anteriores.
+2. Se existir STORE com endereço desconhecido, o LOAD aguarda.
+3. Se existir STORE para o mesmo endereço com valor disponível, ocorre _store forwarding_.
+4. Caso contrário, a leitura é feita diretamente da memória.
+
+Os STOREs atualizam a memória apenas no commit.
+
+---
+
+## Informações Exibidas por Ciclo
+
+O simulador apresenta:
+
+1. Estado geral da execução
+2. Tabela de instruções dinâmicas
+3. Estações de reserva
+4. Buffers de LOAD/STORE
+5. Reorder Buffer
+6. Banco de registradores e RAT
+7. Estado da memória
+8. Log de eventos do ciclo
+
+---
+
+## Estruturas de Dados Principais
+
+|   |   |
+|---|---|
+|Estrutura|Função|
+|`RSEntry`|Estação de reserva|
+|`LSEntry`|Buffer de LOAD/STORE|
+|`FU`|Unidade funcional|
+|`ROBEntry`|Entrada do ROB|
+|`DynInstr`|Histórico de instruções dinâmicas|
+|`PendingWB`|Resultado aguardando escrita no CDB|
+
+---
+
+## Estrutura do Código
+
+```
+main()
+ ├── carregarArquivo()
+ ├── simular()
+ │
+ ├── escreverCDB()
+ ├── executar()
+ │   ├── assignRS()
+ │   ├── assignLS()
+ │   └── advanceFUGroup()
+ │
+ ├── commitROB()
+ └── emitirSuperescalar()
+```
+
+---
+
+## Métricas Finais
+
+Ao término da simulação são reportadas:
+
+- Número total de ciclos
+- CPI (Cycles Per Instruction)
+- Instruções emitidas
+- Instruções commitadas
+- Instruções descartadas por flush
+- Slots de issue desperdiçados
+- Ciclos sem emissão
+- Estado final dos registradores
+- Estado final da memória
+
+---
+
+## Exemplo de Branch
+
+```
+Branch_Mode Predict_Not_Taken
+
+BEQ F0 F1 2
+BNE F2 F3 -4
+```
+
+O primeiro branch avança duas instruções caso `F0 == F1`.
+
+O segundo branch implementa um laço, retornando quatro posições caso `F2 != F3`.
